@@ -1,0 +1,23 @@
+Here is the model configuration audit:
+Current State
+Component
+Whisper STT (core/stt_pipeline.py)
+Diarizer (core/diarizer.py:60-67)
+Argos Translate
+Your Hardware
+- GPU: NVIDIA GeForce RTX 3070 (CUDA capability 8.6)
+- PyTorch: 2.11.0+cu128 (CUDA 12.8) — correctly installed
+- faster-whisper: installed and CUDA-compatible
+Issues Found
+1. Whisper is forced to CPU despite having a GPU. config.py:20 sets WHISPER_DEVICE = "cpu". The RTX 3070 is capable of running Whisper 3-5x faster on CUDA, but it is never used.
+2. No auto-detection for Whisper. Unlike the diarizer, STTPipeline does not check torch.cuda.is_available(). It blindly passes whatever device value it receives to WhisperModel. If you manually change config.py to "cuda" on a machine without CUDA, model loading will crash.
+3. Compute type mismatch potential. WHISPER_COMPUTE_TYPE = "int8" is CPU-optimized. On CUDA, float16 is typically preferred for speed (though int8 does work via CTranslate2 on GPU).
+4. Settings UI has no device toggle. The settings window only lets you change model size, TTS speed, and HUD opacity. There is no way to switch CPU/GPU from the UI.
+5. Diarizer silently swallows CUDA errors. core/diarizer.py:46-49 catches any exception from .to(device) and passes, so if CUDA initialization fails for the diarizer, it falls back to CPU without any visible warning.
+What Needs to Change for GPU
+To use the graphics card correctly:
+- config.py: Change WHISPER_DEVICE to "cuda" (or add auto-detection)
+- config.py: Consider changing WHISPER_COMPUTE_TYPE to "float16" for CUDA
+- core/stt_pipeline.py: Add a _get_device() method like the diarizer has, or validate CUDA availability before passing "cuda" to WhisperModel
+- ui/settings_window.py: Add a CPU/GPU dropdown so users can switch without editing config files
+The diarizer is already configured correctly and will use your RTX 3070 automatically. Whisper is the only component that needs fixing.

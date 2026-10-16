@@ -1,0 +1,15 @@
+{
+  "preset": "Quality",
+  "whisper_model": "medium",
+  "whisper_device": "cuda",
+  "whisper_compute_type": "int8",
+  "whisper_beam_size": 5,
+  "tts_speed": 1.7316715542521994,
+  "hud_opacity": 0.5511764705882353,
+  "audio_loopback": "Speakers (Logitech G733 Gaming Headset)",
+  "audio_mic": "Microphone (Logitech G733 Gaming Headset)",
+  "chunk_duration": 0.5,
+  "silence_duration_ms": 300,
+  "min_chunk_duration": 0.15,
+  "max_chunk_duration": 4.0
+}

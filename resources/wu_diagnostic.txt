@@ -1,0 +1,48 @@
+﻿=== WU Diagnostic ===
+
+--- Services ---
+  wuauserv: Status=Stopped StartType=Manual
+  BITS: Status=Running StartType=Automatic
+  CryptSvc: Status=Running StartType=Automatic
+  msiserver: Status=Stopped StartType=Manual
+  TrustedInstaller: Status=Stopped StartType=Manual
+
+--- WU Agent ---
+  AU Version: 
+
+--- Connectivity ---
+  download.windowsupdate.com: FAILED - The underlying connection was closed: Could not establish trust relationship for the SSL/TLS secure channel.
+  update.microsoft.com: FAILED - The remote server returned an error: (403) Forbidden.
+
+--- SoftwareDistribution ---
+  Path: C:\Windows\SoftwareDistribution
+  Size: 65.8 MB
+
+--- Catroot2 ---
+  Path: C:\Windows\System32\catroot2 (exists)
+
+--- Testing Get-WindowsCapability ---
+  ar-SA Language.Basic: State=Installed
+
+--- Testing DISM ---
+  DISM found ar-SA capabilities:
+    Language.Basic~~~ar-SA~0.0.1.0                           | Installed  
+    Language.OCR~~~ar-SA~0.0.1.0                             | Installed  
+    Language.TextToSpeech~~~ar-SA~0.0.1.0                    | Not Present
+
+--- Testing Install-Language ---
+  Installed languages: 11
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+
+--- Testing DISM capability add (dry run) ---
+  DISM add:  Error: 87  The no-start option is not recognized in this context. For more information, refer to the help.

@@ -1,0 +1,93 @@
+package com.gek.ui;
+
+import javax.swing.*;
+import java.awt.*;
+
+public class HudWindow extends JWindow {
+    private final JTextArea original = new JTextArea(2, 48);
+    private final JTextArea translated = new JTextArea(2, 48);
+    private final JLabel meta = new JLabel(" ");
+
+    public HudWindow(Window owner) {
+        super(owner);
+        setAlwaysOnTop(true);
+        setFocusableWindowState(false);
+        JPanel root = new JPanel(new BorderLayout(4, 4));
+        root.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(60, 60, 60, 170), 1, true),
+                BorderFactory.createEmptyBorder(6, 8, 6, 8)));
+        root.setBackground(new Color(20, 20, 20, 225));
+
+        original.setEditable(false); original.setLineWrap(true); original.setWrapStyleWord(true);
+        original.setColumns(34); original.setRows(1);
+        translated.setEditable(false); translated.setLineWrap(true); translated.setWrapStyleWord(true);
+        translated.setColumns(34); translated.setRows(1);
+        for (JTextArea a : new JTextArea[]{original, translated}) {
+            a.setOpaque(false);
+            a.setForeground(Color.WHITE);
+            a.setFont(a.getFont().deriveFont(Font.PLAIN, 12f));
+            a.setBorder(null);
+        }
+        meta.setForeground(new Color(180, 220, 255));
+        meta.setFont(meta.getFont().deriveFont(10f));
+
+        JPanel texts = new JPanel(new GridLayout(2, 1, 2, 2));
+        texts.setOpaque(false);
+        texts.add(wrap("SRC", original));
+        texts.add(wrap("TR", translated));
+        root.add(meta, BorderLayout.NORTH);
+        root.add(texts, BorderLayout.CENTER);
+        setContentPane(root);
+        pack();
+        positionBottomRight();
+    }
+
+    private JComponent wrap(String label, JTextArea area) {
+        JPanel p = new JPanel(new BorderLayout(4, 0));
+        p.setOpaque(false);
+        JLabel l = new JLabel(label);
+        l.setForeground(new Color(160, 160, 160));
+        l.setFont(l.getFont().deriveFont(Font.BOLD, 10f));
+        l.setPreferredSize(new Dimension(28, 16));
+        p.add(l, BorderLayout.WEST);
+        p.add(area, BorderLayout.CENTER);
+        return p;
+    }
+
+    private void positionBottomRight() {
+        try {
+            GraphicsDevice gd = GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice();
+            Rectangle b = gd.getDefaultConfiguration().getBounds();
+            Insets in = Toolkit.getDefaultToolkit().getScreenInsets(gd.getDefaultConfiguration());
+            int x = b.x + b.width - in.right - getWidth() - 16;
+            int y = b.y + b.height - in.bottom - getHeight() - 16;
+            setLocation(Math.max(b.x + 8, x), Math.max(b.y + 8, y));
+        } catch (Exception ignored) { setLocationRelativeTo(null); }
+    }
+
+    public void showTranscript(String src, String tr, String m) {
+        SwingUtilities.invokeLater(() -> {
+            String s = src == null ? "" : src.trim();
+            String t = tr == null ? "" : tr.trim();
+            original.setText(trimHud(s, 220));
+            translated.setText(trimHud(t, 220));
+            original.setToolTipText(s.isEmpty() ? null : s);
+            translated.setToolTipText(t.isEmpty() ? null : t);
+            meta.setText(m == null ? " " : m);
+            pack();
+            positionBottomRight();
+            if (!isVisible()) setVisible(true);
+        });
+    }
+
+    private static String trimHud(String s, int max) {
+        if (s == null) return "";
+        if (s.length() <= max) return s;
+        return s.substring(0, Math.max(0, max - 1)) + "…";
+    }
+
+    public void setHudOpacity(double opacity) {
+        float a = (float)Math.max(0.2, Math.min(1.0, opacity));
+        try { setOpacity(a); } catch (Throwable ignored) {}
+    }
+}

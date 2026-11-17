@@ -1,0 +1,14 @@
+target/
+*.log
+*.iml
+.idea/
+.vscode/
+
+# Local native runtime/build artifacts (WSL2 dev, not committed)
+native/whisper.cpp/
+native/.venv/
+native/models/ggml-*.bin
+
+# local export/dev venv
+native/.venv-export/
+META-INF/

@@ -6,6 +6,8 @@ import com.gek.audio.NoopAppDucker;
 import com.gek.audio.NoopTtsEngine;
 import com.gek.audio.ShellTtsEngine;
 import com.gek.audio.TtsEngine;
+import com.gek.audio.WindowsAppDucker;
+import com.gek.audio.WindowsSapiTtsEngine;
 import com.gek.core.AppPaths;
 import com.gek.core.AppSettings;
 import com.gek.core.PlatformSupport;
@@ -52,8 +54,15 @@ public final class Main {
                 || "python".equalsIgnoreCase(settings.inference_mode);
         EngineFactory.Engines engines = EngineFactory.create(paths, settings, explicitSidecar);
         TextInjector injector = WindowsTextInjector.bestEffort();
-        TtsEngine tts = PlatformSupport.isLinux() ? new ShellTtsEngine() : new NoopTtsEngine();
-        AppDucker ducker = PlatformSupport.isWindows() ? new NoopAppDucker() : new LinuxNoopAppDucker();
+        TtsEngine tts;
+        if (PlatformSupport.isWindows()) {
+            tts = new WindowsSapiTtsEngine();
+        } else if (PlatformSupport.isLinux()) {
+            tts = new ShellTtsEngine();
+        } else {
+            tts = new NoopTtsEngine();
+        }
+        AppDucker ducker = PlatformSupport.isWindows() ? new WindowsAppDucker() : new LinuxNoopAppDucker();
         DictationController dictation = new DictationController(paths, settings, engines.stt(), engines.translator(), injector, history);
         LiveTranslateController live = new LiveTranslateController(paths, settings, engines.stt(), engines.translator(), history);
         live.setTtsEngine(tts);
@@ -144,7 +153,11 @@ public final class Main {
         System.out.println("  --use-sidecar      Explicitly enable temporary Python sidecar fallback for inference (default is Java-native mode)");
         System.out.println();
         System.out.println("Inference mode: default is 'native' (no Python dependency). Set inference_mode=sidecar in settings or pass --use-sidecar for temporary fallback when Python ML deps/models are available.");
-        System.out.println("No args: launch Swing UI (Windows, X11/Wayland, or WSLg). In WSL2, GUI/caret-inject/loopback/ducking parity depends on host tools/runtime.");
+        if (PlatformSupport.isWindows()) {
+            System.out.println("No args: launch Swing UI (Windows). Windows desktop features (global hotkey, caret injection, SAPI TTS) are enabled; loopback requires ffmpeg + configured DirectShow device, and per-app ducking is a best-effort placeholder pending native integration.");
+        } else {
+            System.out.println("No args: launch Swing UI (Windows, X11/Wayland, or WSLg). In WSL2, Windows-host GUI/caret-inject/loopback/ducking parity requires running this app on Windows; Linux/WSLg provides partial local substitutes.");
+        }
     }
 
     public static void runSelfTestPublic(AppPaths paths, SettingsStore store, HistoryRepository history, EngineFactory.Engines engines, String[] args) { runSelfTest(paths, store, history, engines, args); }
@@ -209,11 +222,20 @@ public final class Main {
 
     private static String nativeVerdict(PlatformSupport.Capabilities c) {
         StringBuilder sb = new StringBuilder();
-        sb.append("core UI/history/settings/Java pipeline tools can run on Linux/WSL2 (no Python required)");
-        if (c.wslg()) sb.append("; WSLg display detected (GUI launchable in this WSL env)");
-        else sb.append("; GUI requires display server");
-        sb.append(". Missing for full GEK parity on pure WSL2: Windows-global hotkey into Windows apps, caret injection into Windows apps, WASAPI system loopback, Core Audio app ducking, SAPI5 TTS.");
-        sb.append(" Linux substitutes (local clipboard/paste tools, local TTS, Pulse/PipeWire monitor) can cover WSLg Linux-desktop workflows but not Windows-host app control.");
+        sb.append("Core UI/history/settings/Java pipeline tools available (no Python required)");
+        if (c.gui()) sb.append("; GUI runtime appears available");
+        else sb.append("; GUI requires display server and non-headless JDK/JRE");
+        if (PlatformSupport.isWindows()) {
+            sb.append(". Windows desktop integration: global hotkey=").append(c.windowsGlobalHotkey())
+              .append(", caret injection=").append(c.windowsCaretInjection())
+              .append(", SAPI TTS=").append(c.windowsSapiTts())
+              .append(", loopback(ffmpeg/device-config)=").append(c.windowsWasapiLoopback())
+              .append(", per-app ducking(best-effort placeholder)=").append(c.windowsCoreAudioDucking())
+              .append(". Full Windows-host capture/ducking fidelity may require additional native/runtime support.");
+        } else {
+            if (c.wslg()) sb.append("; WSLg display detected (GUI launchable in this WSL env)");
+            sb.append(". Windows-host global hotkey/inject/loopback/ducking/TTS parity requires running this app on Windows. Linux substitutes (local clipboard/paste tools, local TTS, Pulse/PipeWire monitor) may cover Linux-desktop workflows.");
+        }
         return sb.toString();
     }
 

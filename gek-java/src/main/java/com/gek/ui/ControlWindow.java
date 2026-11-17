@@ -107,10 +107,18 @@ public class ControlWindow extends JFrame {
         pathsLabel.setToolTipText("Project: " + paths.projectRoot() + " | Models: " + paths.modelsDir() + " | DB: " + paths.dbPath());
         c.gridy = r; c.gridx = 0; c.gridwidth = 4; c.weightx = 1; top.add(pathsLabel, c); r++;
 
-        JLabel wsl2 = compactLabel("WSL2: WSLg clipboard/paste may work; no Windows-global hotkey/inject, WASAPI loopback, or app ducking. Live loopback = Linux/Pulse/PipeWire/ffmpeg only.");
-        wsl2.setForeground(new Color(95, 95, 95));
-        wsl2.setToolTipText("Captures Linux-side audio sources when available. Full Windows-host parity requires a Windows session.");
-        c.gridy = r; c.gridx = 0; c.gridwidth = 4; c.weightx = 1; top.add(wsl2, c);
+        String envMsg;
+        if (PlatformSupport.isWindows()) {
+            envMsg = "Windows desktop: global hotkey/inject available; TTS via Windows SAPI; loopback needs ffmpeg + configured DirectShow device (settings.audio_loopback); per-app ducking best-effort.";
+        } else if (caps.wsl()) {
+            envMsg = "WSL2: WSLg clipboard/paste may work; no Windows-global hotkey/inject, WASAPI loopback, or app ducking. Live loopback = Linux/Pulse/PipeWire/ffmpeg only.";
+        } else {
+            envMsg = "Linux desktop: local hotkey/clipboard tools and Pulse/PipeWire/ffmpeg loopback (when available). Windows-host integration features require a Windows session.";
+        }
+        JLabel envLabel = compactLabel(envMsg);
+        envLabel.setForeground(new Color(95, 95, 95));
+        envLabel.setToolTipText("Feature availability depends on host OS, runtime tools, and audio devices.");
+        c.gridy = r; c.gridx = 0; c.gridwidth = 4; c.weightx = 1; top.add(envLabel, c);
         add(top, BorderLayout.NORTH);
 
         logArea.setEditable(false);
@@ -248,9 +256,15 @@ public class ControlWindow extends JFrame {
                     if (com.gek.audio.CommandLoopbackCapture.isSupported()) {
                         com.gek.audio.CommandLoopbackCapture lb = new com.gek.audio.CommandLoopbackCapture(16000, v(settings.chunk_duration, 0.25f), settings.audio_loopback);
                         live.startLoopback(lb);
-                        appendStatus("Live loopback started via " + lb.name() + " (Linux monitor; captures Linux-side audio, not Windows host).");
+                        String note = PlatformSupport.isWindows()
+                                ? " (Windows host capture via ffmpeg/DirectShow device; configure settings.audio_loopback to the desired capture device)."
+                                : " (Linux monitor; captures Linux-side audio, not Windows host).";
+                        appendStatus("Live loopback started via " + lb.name() + note);
                     } else {
-                        appendStatus("Loopback capture unavailable on this system (no Pulse/PipeWire/ffmpeg recorder found). Install pw-record/parec/ffmpeg and ensure a monitor source. Falling back to mic.");
+                        String hint = PlatformSupport.isWindows()
+                                ? "Loopback capture unavailable. Install ffmpeg and set settings.audio_loopback to a DirectShow audio device name (e.g. Stereo Mix/virtual cable). Falling back to mic."
+                                : "Loopback capture unavailable on this system (no Pulse/PipeWire/ffmpeg recorder found). Install pw-record/parec/ffmpeg and ensure a monitor source. Falling back to mic.";
+                        appendStatus(hint);
                         live.startMic();
                     }
                 } else {

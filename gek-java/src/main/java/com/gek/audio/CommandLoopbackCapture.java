@@ -97,7 +97,8 @@ public class CommandLoopbackCapture implements LoopbackCapture {
     }
 
     static List<String> buildBaseCommand(int sampleRate, String monitorSource) {
-        String src = (monitorSource == null || monitorSource.isBlank()) ? "@DEFAULT_MONITOR@" : monitorSource;
+        String src = (monitorSource == null || monitorSource.isBlank()) ? "@DEFAULT_MONITOR@" : monitorSource.trim();
+        // Linux / PipeWire / Pulse
         if (PlatformSupport.commandExists("pw-record")) {
             // PipeWire: record default monitor to stdout raw s16le mono
             List<String> c = new ArrayList<>(List.of("pw-record", "--format", "s16", "--rate", String.valueOf(sampleRate), "--channels", "1", "-"));
@@ -115,6 +116,24 @@ public class CommandLoopbackCapture implements LoopbackCapture {
             return c;
         }
         if (PlatformSupport.commandExists("ffmpeg")) {
+            if (PlatformSupport.isWindows()) {
+                // Best-effort Windows capture via ffmpeg.
+                // Configure settings.audio_loopback to one of:
+                //   - "wasapi:<device>" (e.g. wasapi:default, wasapi:Speakers (loopback) - ffmpeg/build dependent)
+                //   - "<DirectShow device name>" (e.g. "Stereo Mix (Realtek(R) Audio)" or a virtual cable)
+                // Without an explicit device name we cannot reliably guess a loopback source.
+                if ("@DEFAULT_MONITOR@".equals(src)) return null;
+                if (src.regionMatches(true, 0, "wasapi:", 0, 7)) {
+                    String dev = src.substring(7).trim();
+                    if (dev.isEmpty()) dev = "default";
+                    return List.of("ffmpeg", "-hide_banner", "-loglevel", "error",
+                            "-f", "wasapi", "-i", dev,
+                            "-ac", "1", "-ar", String.valueOf(sampleRate), "-f", "s16le", "-");
+                }
+                return List.of("ffmpeg", "-hide_banner", "-loglevel", "error",
+                        "-f", "dshow", "-i", "audio=" + src,
+                        "-ac", "1", "-ar", String.valueOf(sampleRate), "-f", "s16le", "-");
+            }
             // best-effort pulse input; may fail without pulse device but command exists
             String dev = "@DEFAULT_MONITOR@".equals(src) ? "default" : src;
             return List.of("ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "pulse", "-i", dev,

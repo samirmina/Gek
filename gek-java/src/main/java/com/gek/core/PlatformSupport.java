@@ -1,9 +1,12 @@
 package com.gek.core;
 
 import java.awt.GraphicsEnvironment;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 public final class PlatformSupport {
     private PlatformSupport() {}
@@ -42,16 +45,31 @@ public final class PlatformSupport {
         boolean gui = guiAvailable();
         boolean linuxInject = lin && (commandExists("wl-copy") || commandExists("xclip") || commandExists("xsel") || commandExists("ydotool") || commandExists("xdotool"));
         boolean linuxTts = lin && (commandExists("espeak-ng") || commandExists("espeak") || commandExists("spd-say") || commandExists("piper"));
+        boolean windowsLoopback = win && commandExists("ffmpeg"); // best-effort via ffmpeg + DirectShow device (see audio_loopback setting)
+        boolean windowsDucking = false; // Core Audio per-app ducking requires native/helper integration; placeholder not active
+        boolean windowsTts = win; // Windows SAPI via PowerShell/System.Speech
         return new Capabilities(win, lin, wsl, wslg, gui,
-                win, win, win, win, win,
+                win, win, windowsLoopback, windowsDucking, windowsTts,
                 linuxInject, linuxTts);
     }
 
     public static boolean commandExists(String name) {
+        if (name == null || name.isBlank()) return false;
         try {
-            Process p = new ProcessBuilder("sh", "-lc", "command -v " + name).redirectErrorStream(true).start();
-            int code = p.waitFor();
-            return code == 0;
+            ProcessBuilder pb;
+            if (isWindows()) {
+                pb = new ProcessBuilder("cmd.exe", "/c", "where " + name);
+            } else {
+                pb = new ProcessBuilder("sh", "-lc", "command -v " + name);
+            }
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                while (br.readLine() != null) { /* consume */ }
+            } catch (Exception ignored) {}
+            boolean finished = p.waitFor(3, TimeUnit.SECONDS);
+            if (!finished) { p.destroyForcibly(); return false; }
+            return p.exitValue() == 0;
         } catch (Exception e) { return false; }
     }
 }

@@ -103,50 +103,73 @@ public final class CliRunner {
         boolean sidecar = engines != null && engines.sidecarOrNull() != null;
         long completeWhisper = c.whisper.stream().filter(w -> w.complete).count();
         long usablePairs = c.argosPairs.stream().filter(p -> p.hasModel).count();
-        boolean py3 = onPath("python3");
+        boolean py3 = onPath("python3") || onPath("python");
         boolean pip = onPath("pip3") || onPath("pip");
         boolean ffmpeg = onPath("ffmpeg");
         boolean pw = onPath("pw-record") || onPath("parec") || onPath("parecord") || onPath("pw-cat");
-        boolean tts = onPath("espeak-ng") || onPath("espeak") || onPath("spd-say") || onPath("piper");
-        boolean inject = onPath("wl-copy") || onPath("xclip") || onPath("xdotool") || onPath("ydotool");
-        System.out.println("WSL2 readiness report (target runtime for full functionality: Windows)");
+        boolean linuxTts = onPath("espeak-ng") || onPath("espeak") || onPath("spd-say") || onPath("piper");
+        boolean linuxInject = onPath("wl-copy") || onPath("xclip") || onPath("xdotool") || onPath("ydotool");
+
+        System.out.println("Platform readiness report (primary target for full desktop parity: Windows host)");
         System.out.println();
-        System.out.println("[NOW - feasible/validatable in this WSL2 env]");
+        System.out.println("[NOW - core/verified baseline]");
         System.out.println("  - Build/test/package (Java 21/Maven): YES");
         System.out.println("  - Headless CLI/diagnostics (help/self-test/assets/doctor/platform/model-catalog/history/inference-check/native-info): YES");
         System.out.println("  - Pure-Java pipeline: settings/history DB, WAV read/write + VAD segmentation, headless simulated live pipeline (--live-simulate-file), synonyms/post-processing: YES");
         System.out.println("  - Local assets detected: whisper complete " + completeWhisper + "/" + c.whisper.size() + ", argos pairs with model " + usablePairs + "/" + c.argosPairs.size() + ", pyannote complete=" + (c.pyannote!=null&&c.pyannote.complete) + ", synonyms=" + (c.synonymLangs==null?0:c.synonymLangs.size()));
         boolean sttR = engines!=null && engines.stt() instanceof com.gek.inference.NativeSpeechToTextEngine n && n.runtimeUsable();
         boolean sttInJvm = engines!=null && engines.stt() instanceof com.gek.inference.NativeSpeechToTextEngine nIn && nIn.inJvm();
-        boolean trR2 = engines!=null && engines.translator() instanceof com.gek.inference.NativeTranslationEngine ntr2 && ntr2.runtimeUsable();
-        boolean diR2 = engines!=null && engines.diarizer() instanceof com.gek.inference.NativeDiarizationEngine ndi2 && ndi2.runtimeUsable();
-        System.out.println("  - Effective inference mode=" + (engines!=null?engines.mode():"unknown") + " (STT native ready=" + sttR + ", translation native ready=" + trR2 + ", diarization native ready=" + diR2 + "; sidecar enabled=" + sidecar + ")");
-        System.out.println();
-        System.out.println("[WITH SETUP/RUNTIME CHANGES - possible in WSL2, optional dev/partial validation flow]");
-        System.out.println("  - Swing GUI via WSLg: WSLg detected=" + caps.wslg() + ", gui env=" + caps.gui() + ", JVM headless=" + headless + " (needs non-headless JDK/JRE)");
-        System.out.println("  - Java Sound mic/input: enumerated at runtime via --list-audio-devices (devices depend on WSL audio exposure)");
-        System.out.println("  - Linux loopback capture tools: ffmpeg=" + ffmpeg + " pulse/pipewire helpers=" + pw);
-        System.out.println("  - Linux TTS/clipboard/inject helpers: tts=" + tts + " inject/clipboard=" + inject);
-        String pyMl = pyMlStatus();
-        System.out.println("  - Temporary Python sidecar fallback: python3=" + py3 + " pip=" + pip + " ml_deps=[" + pyMl + "] (enable with --use-sidecar only if required deps present)");
         boolean trR = engines!=null && engines.translator() instanceof com.gek.inference.NativeTranslationEngine ntr && ntr.runtimeUsable();
-        boolean diR = engines!=null && engines.diarizer() instanceof com.gek.inference.NativeDiarizationEngine ndi && ndi.runtimeUsable();
         boolean trInJvm = engines!=null && engines.translator() instanceof com.gek.inference.NativeTranslationEngine ntrI && ntrI.inJvm();
-        System.out.println("  - Option C Java-native inference: STT(" + (sttInJvm?"in-process libwhisper JNA shim":"whisper.cpp/GGML") + ")=" + (sttR?"READY(no-Python/subprocess)":"NOT READY") + "; translation(" + (trInJvm?"in-process embedded CTranslate2+SentencePiece shim":"Argos CTranslate2+SentencePiece helper") + ")=" + (trR?"READY(no-subprocess/sidecar)":"NOT READY") + "; diarization(Pyannote/ORT)=" + (diR?"READY (in-JVM ONNX Runtime pipeline)":"NOT READY (needs segmentation.onnx+embedding.onnx in resources/models/pyannote/onnx/ and ORT dependency)") + ".");
+        boolean diR = engines!=null && engines.diarizer() instanceof com.gek.inference.NativeDiarizationEngine ndi && ndi.runtimeUsable();
+        System.out.println("  - Effective inference mode=" + (engines!=null?engines.mode():"unknown") + " (STT native ready=" + sttR + ", translation native ready=" + trR + ", diarization native ready=" + diR + "; sidecar enabled=" + sidecar + ")");
+        System.out.println("  - Option C Java-native inference: STT(" + (sttInJvm?"in-process libwhisper JNA shim":"whisper.cpp/GGML") + ")=" + (sttR?"READY":"NOT READY") + "; translation(" + (trInJvm?"in-process embedded CTranslate2+SentencePiece shim":"Argos helper") + ")=" + (trR?"READY":"NOT READY") + "; diarization=" + (diR?"READY (in-JVM ONNX Runtime pipeline)":"NOT READY") + ".");
         System.out.println();
-        System.out.println("[WINDOWS-REQUIRED - not achievable as full parity in WSL2]");
-        System.out.println("  - Global hotkeys and caret/text injection into native Windows apps");
-        System.out.println("  - WASAPI/system loopback of Windows-host audio and Core Audio per-app ducking");
-        System.out.println("  - Windows-native TTS (SAPI5/Core Audio) and Windows window/process/UI integration");
-        System.out.println("  - Full end-to-end dictation/live-translate parity on Windows host");
+        if (PlatformSupport.isWindows()) {
+            System.out.println("[WINDOWS DESKTOP - enabled integration paths in this build]");
+            System.out.println("  - Swing UI: gui env=" + caps.gui() + ", JVM headless=" + headless + " (requires non-headless JDK/JRE)");
+            System.out.println("  - Global hotkeys (RegisterHotKey) and caret/text injection (clipboard + Ctrl+V): wired for Windows");
+            System.out.println("  - Windows TTS (SAPI via PowerShell/System.Speech): enabled=" + caps.windowsSapiTts());
+            System.out.println("  - System/loopback capture (best-effort): ffmpeg present=" + ffmpeg + ". Configure settings.audio_loopback to a DirectShow audio device name for --/UI live loopback.");
+            System.out.println("  - Core Audio per-app ducking: integration hook present, native per-app implementation pending (best-effort placeholder; not reported as active)");
+            System.out.println("  - Java Sound mic/input: enumerated at runtime via --list-audio-devices");
+        } else {
+            System.out.println("[ENVIRONMENT / SETUP]");
+            System.out.println("  - Swing GUI via display/WSLg: WSLg detected=" + caps.wslg() + ", gui env=" + caps.gui() + ", JVM headless=" + headless + " (needs non-headless JDK/JRE and display)");
+            System.out.println("  - Java Sound mic/input: enumerated at runtime via --list-audio-devices (devices depend on host/audio exposure)");
+            System.out.println("  - Linux loopback capture tools: ffmpeg=" + ffmpeg + " pulse/pipewire helpers=" + pw);
+            System.out.println("  - Linux TTS/clipboard/inject helpers: tts=" + linuxTts + " inject/clipboard=" + linuxInject);
+            System.out.println();
+            System.out.println("[WINDOWS-HOST DESKTOP PARITY - requires running this Java app on Windows]");
+            System.out.println("  - Global hotkeys and caret/text injection into native Windows apps: enabled when run on Windows");
+            System.out.println("  - Windows TTS (SAPI): enabled when run on Windows");
+            System.out.println("  - Windows host system-loopback capture and Core Audio per-app ducking: require Windows host + appropriate capture/ducking runtime support");
+        }
         System.out.println();
-        System.out.println("[OK] wsl2-readiness completed");
+        String pyMl = pyMlStatus();
+        System.out.println("[OPTIONAL FALLBACK]");
+        System.out.println("  - Temporary Python sidecar: python3=" + py3 + " pip=" + pip + " ml_deps=[" + pyMl + "] (enable with --use-sidecar only if required deps present)");
+        System.out.println();
+        System.out.println("[OK] platform readiness completed");
     }
 
     private static boolean onPath(String cmd) {
+        if (cmd == null || cmd.isBlank()) return false;
         try {
-            Process p = new ProcessBuilder("sh", "-lc", "command -v " + cmd + " >/dev/null 2>&1").start();
-            return p.waitFor() == 0;
+            ProcessBuilder pb;
+            if (PlatformSupport.isWindows()) {
+                pb = new ProcessBuilder("cmd.exe", "/c", "where " + cmd);
+            } else {
+                pb = new ProcessBuilder("sh", "-lc", "command -v " + cmd + " >/dev/null 2>&1");
+            }
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            try (java.io.BufferedReader br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()))) {
+                while (br.readLine() != null) { /* consume */ }
+            } catch (Exception ignored) {}
+            boolean finished = p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) { p.destroyForcibly(); return false; }
+            return p.exitValue() == 0;
         } catch (Exception e) { return false; }
     }
 

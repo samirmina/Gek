@@ -8,7 +8,7 @@ Target for full end-to-end parity is **Windows**. This README is the runbook for
 ## Prerequisites
 - Java 21 (a **non-headless** JDK/JRE is required to launch the Swing UI; headless is fine for CLI)
 - Maven 3.9+
-- Project assets/models present under `resources/` (see *Assets & resolution*)
+- Project assets/models present locally under `resources/` (not bundled in this repo snapshot; see *Assets & resolution*)
 - Run commands from `gek-java/` unless noted; paths below assume that working directory
 
 ## Build, test, package
@@ -70,10 +70,11 @@ Not achievable/validatable as full parity in WSL2; implement and validate on Win
 - Full end-to-end dictation/live-translate parity on the Windows host
 
 ## Assets & resolution (current baseline)
+Large runtime assets/models are expected locally and are **not** bundled in this repository snapshot.
 - **STT:** in-process JNA shim `gek-java/native/libgek_whisper_shim.so` over GGML models in `resources/models/whisper-ggml/` (e.g. `ggml-medium.bin`, plus base/small/tiny as available). Falls back to an available/valid GGML when the requested one is missing/corrupt. `whisper.cpp` CLI subprocess is fallback only if shim is unavailable.
 - **Translation:** in-process JNA shim `gek-java/native/libgek_translate_shim.so` (embedded Python/CT2 runtime) using `gek-java/native/.venv` (`ctranslate2`, `sentencepiece`) over Argos packages in `resources/models/argos/packages/`. Requires an explicit `--source-lang/--target-lang` pair with a **SentencePiece** tokenizer. Helper subprocess fallback only.
   - *Known asset limitation:* BPE-only packages are unusable in this runtime (currently `en->pl`, `es->en`); other present SentencePiece pairs are usable.
-- **Diarization:** in-JVM ONNX Runtime pipeline using `resources/models/pyannote/speaker-diarization-community-1/` (`config.yaml`, `plda/*.npz`, and `onnx/` artifacts: `segmentation.onnx`, `embedding_encoder.onnx`, `resnet_seg_1_weight.npy`, `resnet_seg_1_bias.npy`). Functional baseline is ready; artifact/export parity caveats are tracked in `WSL2_HANDOFF.md`.
+- **Diarization:** in-JVM ONNX Runtime pipeline using `resources/models/pyannote/speaker-diarization-community-1/` (`config.yaml`, `plda/*.npz`, and `onnx/` artifacts: `segmentation.onnx`, `embedding_encoder.onnx`, `resnet_seg_1_weight.npy`, `resnet_seg_1_bias.npy`). Functional baseline is ready; artifact/export parity caveats are tracked in [`WSL2_HANDOFF.md`](WSL2_HANDOFF.md).
 - **Config/data:** `resources/data/` (`settings.json`, `history.db`, `synonyms/`); inference mode defaults to `native`.
 - **Notes:** no local GGML `large-v3` asset in this environment.
 
@@ -93,5 +94,6 @@ Dependencies vary by engine (e.g. `faster-whisper`, `argostranslate`, `torch`/`p
 - `db` — SQLite history
 - `ui` — Swing
 - `inject`, `text` — injection and text/post-processing helpers
-- `native/` — local shims/runtime helpers and dev artifacts
-- `bridge/` — optional Python sidecar (fallback)
+- `native/` — committed shims/runtime helpers and `models/test_tone.wav` (local model/build artifacts such as `.venv/` or `whisper.cpp/` are not bundled)
+- `README.md`, `WSL2_HANDOFF.md` — runbook and WSL2 baseline notes
+- `bridge/` — optional Python sidecar (fallback, not included in this snapshot)

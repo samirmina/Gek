@@ -6,8 +6,8 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ClipboardTextInjectorTest {
     @Test
-    void bestEffortReturnsInjectorWithName() {
-        TextInjector inj = ClipboardTextInjector.bestEffort();
+    void forPlatformReturnsInjectorWithName() {
+        TextInjector inj = ClipboardTextInjector.forPlatform();
         assertNotNull(inj);
         assertNotNull(inj.name());
         assertFalse(inj.name().isBlank());

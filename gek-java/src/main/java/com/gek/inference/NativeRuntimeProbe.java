@@ -33,23 +33,58 @@ public final class NativeRuntimeProbe {
     }
 
     public static Optional<String> findWhisperCppBinary(AppPaths paths) {
-        String[] names = {"whisper-cli", "whisper-cpp", "main"};
-        for (String n : names) {
-            if (onPath(n)) return Optional.of(n);
+        return findWhisperBinary(paths, new String[]{"whisper-cli", "whisper-cpp", "main"});
+    }
+
+    /** whisper.cpp streaming binary (continuous mic capture + incremental output). */
+    public static Optional<String> findWhisperStreamBinary(AppPaths paths) {
+        return findWhisperBinary(paths, new String[]{"whisper-stream", "stream"});
+    }
+
+    /** whisper.cpp HTTP server binary. */
+    public static Optional<String> findWhisperServerBinary(AppPaths paths) {
+        return findWhisperBinary(paths, new String[]{"whisper-server", "server"});
+    }
+
+    private static Optional<String> findWhisperBinary(AppPaths paths, String[] baseNames) {
+        boolean win = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        if (!win) {
+            for (String n : baseNames) {
+                if (onPath(n)) return Optional.of(n);
+            }
+        } else {
+            // Windows: prefer .exe on PATH
+            for (String n : baseNames) {
+                if (onPath(n + ".exe")) return Optional.of(n + ".exe");
+                if (onPath(n)) return Optional.of(n);
+            }
         }
         if (paths != null) {
             Path root = paths.projectRoot();
-            String[] rels = {
-                    "gek-java/native/bin/whisper-cli",
-                    "gek-java/native/whisper.cpp/build/bin/whisper-cli",
-                    "gek-java/native/whisper.cpp/build/bin/main",
-                    "gek-java/native/whisper.cpp/main",
-                    "native/bin/whisper-cli",
-                    "native/whisper.cpp/build/bin/whisper-cli"
+            String[] dirRels = {
+                    "gek-java/native/bin",
+                    "gek-java/native/whisper.cpp/build/bin",
+                    "gek-java/native/whisper.cpp",
+                    "native/bin",
+                    "native/whisper.cpp/build/bin"
             };
-            for (String r : rels) {
-                Path p = root.resolve(r);
-                if (Files.isRegularFile(p) && Files.isExecutable(p)) return Optional.of(p.toAbsolutePath().toString());
+            for (String d : dirRels) {
+                Path dir = root.resolve(d);
+                for (String n : baseNames) {
+                    if (win) {
+                        Path pe = dir.resolve(n + ".exe");
+                        if (Files.isRegularFile(pe)) return Optional.of(pe.toAbsolutePath().toString());
+                    }
+                    Path p = dir.resolve(n);
+                    if (Files.isRegularFile(p)) {
+                        if (win) {
+                            // avoid selecting Linux ELF binaries on Windows (CreateProcess error 193)
+                            String name = p.getFileName().toString().toLowerCase(Locale.ROOT);
+                            if (!name.endsWith(".exe")) continue;
+                        }
+                        if (Files.isExecutable(p) || win) return Optional.of(p.toAbsolutePath().toString());
+                    }
+                }
             }
         }
         return Optional.empty();
@@ -159,7 +194,15 @@ public final class NativeRuntimeProbe {
 
     public static Optional<String> findWhisperShimLibrary(AppPaths paths) {
         if (paths == null) return Optional.empty();
-        String[] rels = {
+        boolean win = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        String[] rels = win ? new String[] {
+                "gek-java/native/libgek_whisper_shim.dll",
+                "gek-java/native/gek_whisper_shim.dll",
+                "gek-java/native/bin/libgek_whisper_shim.dll",
+                "gek-java/native/bin/gek_whisper_shim.dll",
+                "native/libgek_whisper_shim.dll",
+                "native/gek_whisper_shim.dll"
+        } : new String[] {
                 "gek-java/native/libgek_whisper_shim.so",
                 "gek-java/native/bin/libgek_whisper_shim.so",
                 "gek-java/native/lib/libgek_whisper_shim.so",
@@ -169,11 +212,18 @@ public final class NativeRuntimeProbe {
             Path p = paths.projectRoot().resolve(r);
             if (Files.isRegularFile(p)) return Optional.of(p.toAbsolutePath().toString());
         }
-        // common library name on path
+        // common library name in cwd
+        String local = win ? "libgek_whisper_shim.dll" : "libgek_whisper_shim.so";
         try {
-            java.io.File f = new java.io.File("libgek_whisper_shim.so");
+            java.io.File f = new java.io.File(local);
             if (f.isFile()) return Optional.of(f.getAbsolutePath());
         } catch (Exception ignored) {}
+        if (win) {
+            try {
+                java.io.File f = new java.io.File("gek_whisper_shim.dll");
+                if (f.isFile()) return Optional.of(f.getAbsolutePath());
+            } catch (Exception ignored) {}
+        }
         return Optional.empty();
     }
 
@@ -201,7 +251,8 @@ public final class NativeRuntimeProbe {
         }
         sb.append("Local faster-whisper/CTranslate2 snapshots complete=[").append(complete).append("], requested=").append(requestedModel)
           .append(hasWanted?"(present, CTranslate2 format)":"(missing)").append(". ");
-        sb.append("whisper shim=").append(shim.orElse("not found (expected gek-java/native/libgek_whisper_shim.so)")).append("; ");
+        sb.append("whisper shim=").append(shim.orElse("not found (expected gek-java/native/"
+                + (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win") ? "libgek_whisper_shim.dll" : "libgek_whisper_shim.so") + ")")).append("; ");
         sb.append("GGML whisper models=").append(ggml.isEmpty()?"none":ggml.stream().map(p->p.getFileName().toString()).reduce((a,b)->a+","+b).orElse("none")).append(". ");
         if (!(shim.isPresent() && model.isPresent())) {
             if (ggml.isEmpty()) {
@@ -355,7 +406,15 @@ public final class NativeRuntimeProbe {
 
     public static Optional<String> findTranslationShimLibrary(AppPaths paths) {
         if (paths == null) return Optional.empty();
-        String[] rels = {
+        boolean win = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+        String[] rels = win ? new String[] {
+                "gek-java/native/libgek_translate_shim.dll",
+                "gek-java/native/gek_translate_shim.dll",
+                "gek-java/native/bin/libgek_translate_shim.dll",
+                "gek-java/native/bin/gek_translate_shim.dll",
+                "native/libgek_translate_shim.dll",
+                "native/gek_translate_shim.dll"
+        } : new String[] {
                 "gek-java/native/libgek_translate_shim.so",
                 "gek-java/native/bin/libgek_translate_shim.so",
                 "native/libgek_translate_shim.so"
@@ -426,7 +485,8 @@ public final class NativeRuntimeProbe {
             sb.append("shim=").append(shim.get()).append(" python_home=").append(home.get()).append(" site=").append(site.get()).append(". ");
         } else {
             sb.append("Native Java in-JVM translation runtime (Option C) NOT READY. ");
-            sb.append("shim=").append(shim.orElse("not found (expected gek-java/native/libgek_translate_shim.so)"));
+            sb.append("shim=").append(shim.orElse("not found (expected gek-java/native/"
+                    + (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win") ? "libgek_translate_shim.dll" : "libgek_translate_shim.so") + ")"));
             sb.append("; venv_home=").append(home.orElse("not found"));
             sb.append("; site_packages=").append(site.orElse("not found")).append(". ");
         }

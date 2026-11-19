@@ -20,8 +20,6 @@ import com.gek.inference.SidecarClient;
 import com.gek.inference.SpeechToTextEngine;
 import com.gek.inference.TranscriptionResult;
 import com.gek.inference.TranslationEngine;
-import com.gek.inject.TextInjector;
-import com.gek.inject.WindowsTextInjector;
 import com.gek.text.SynonymReplacer;
 import com.gek.text.TranslationPostProcessor;
 import org.slf4j.Logger;

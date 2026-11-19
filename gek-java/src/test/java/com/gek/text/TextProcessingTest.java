@@ -29,5 +29,21 @@ class TextProcessingTest {
         assertEquals(2, r.counts().get("en"));
         assertEquals("I am going to see you", r.apply("I am gonna see u", "en"));
         assertEquals("hola", r.apply("hola", "es"));
+        // null/blank and missing locale handled
+        assertNull(r.apply(null, "en"));
+        assertEquals("", r.apply("", "en"));
+        assertEquals("text", r.apply("text", null));
+        assertEquals("text", r.apply("text", "  "));
+        assertEquals(0, SynonymReplacer.load(tmp.resolve("missing-dir")).counts().size());
+    }
+
+    @Test
+    void repetitionDetectionEdgeCases() {
+        assertFalse(TranslationPostProcessor.isRepetitive(null, "hi"));
+        assertFalse(TranslationPostProcessor.isRepetitive("   ", "hi"));
+        assertFalse(TranslationPostProcessor.isRepetitive("short", null));
+        assertFalse(TranslationPostProcessor.isRepetitive("short", "   "));
+        // not repetitive when source is long enough and text varied
+        assertFalse(TranslationPostProcessor.isRepetitive("a varied sentence here", "a comparable source sentence"));
     }
 }

@@ -34,19 +34,25 @@ public final class AppPaths {
 
     public static AppPaths resolve() {
         String override = System.getProperty("gek.projectRoot", System.getenv("GEK_PROJECT_ROOT"));
+        Path cwd = Path.of("").toAbsolutePath().normalize();
+        return resolve(cwd, override);
+    }
+
+    /** Testable resolution seam: applies override or cwd-based heuristics. */
+    static AppPaths resolve(Path cwd, String projectRootOverride) {
         Path root;
-        if (override != null && !override.isBlank()) {
-            root = Path.of(override);
+        if (projectRootOverride != null && !projectRootOverride.isBlank()) {
+            root = Path.of(projectRootOverride);
         } else {
-            Path cwd = Path.of("").toAbsolutePath().normalize();
+            Path c = cwd.toAbsolutePath().normalize();
             // support running from gek-java/ or repo root
-            if (Files.exists(cwd.resolve("resources")) && Files.exists(cwd.resolve("gek-java"))) {
-                root = cwd;
-            } else if (Files.exists(cwd.getParent() != null ? cwd.getParent().resolve("resources") : cwd.resolve("resources"))
-                    && cwd.getFileName() != null && "gek-java".equals(cwd.getFileName().toString())) {
-                root = cwd.getParent();
+            if (Files.exists(c.resolve("resources")) && Files.exists(c.resolve("gek-java"))) {
+                root = c;
+            } else if (Files.exists(c.getParent() != null ? c.getParent().resolve("resources") : c.resolve("resources"))
+                    && c.getFileName() != null && "gek-java".equals(c.getFileName().toString())) {
+                root = c.getParent();
             } else {
-                root = cwd;
+                root = c;
             }
         }
         return new AppPaths(root);

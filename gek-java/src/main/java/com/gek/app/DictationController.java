@@ -1,5 +1,6 @@
 package com.gek.app;
 
+import com.gek.audio.AutoAudioSelector;
 import com.gek.audio.MicCapture;
 import com.gek.audio.SpeechSegmenter;
 import com.gek.audio.WavWriter;
@@ -10,7 +11,9 @@ import com.gek.db.TranslationRecord;
 import com.gek.inference.SpeechToTextEngine;
 import com.gek.inference.TranscriptionResult;
 import com.gek.inference.TranslationEngine;
-import com.gek.inject.TextInjector;
+import com.gek.inject.InputExecutor;
+import com.gek.inject.RobotInputExecutor;
+import com.gek.inject.VoiceCommandInterpreter;
 import com.gek.text.SynonymReplacer;
 import com.gek.text.TranslationPostProcessor;
 import org.slf4j.Logger;
@@ -30,7 +33,8 @@ public class DictationController implements AutoCloseable {
     private final AppSettings settings;
     private final SpeechToTextEngine stt;
     private final TranslationEngine translator;
-    private final TextInjector injector;
+    private final InputExecutor input;
+    private final VoiceCommandInterpreter commands = new VoiceCommandInterpreter();
     private final HistoryRepository history; // optional
     private final SynonymReplacer synonyms;
     private final ExecutorService exec = Executors.newSingleThreadExecutor(r -> {
@@ -42,14 +46,24 @@ public class DictationController implements AutoCloseable {
     private Consumer<String> statusListener;
 
     public DictationController(AppPaths paths, AppSettings settings, SpeechToTextEngine stt,
-                               TranslationEngine translator, TextInjector injector, HistoryRepository history) {
+                               TranslationEngine translator, HistoryRepository history) {
+        this(paths, settings, stt, translator, history, RobotInputExecutor.forPlatform());
+    }
+
+    public DictationController(AppPaths paths, AppSettings settings, SpeechToTextEngine stt,
+                               TranslationEngine translator, HistoryRepository history,
+                               InputExecutor input) {
         this.paths = paths; this.settings = settings; this.stt = stt; this.translator = translator;
-        this.injector = injector; this.history = history;
+        this.history = history;
+        this.input = input != null ? input : RobotInputExecutor.forPlatform();
         this.synonyms = SynonymReplacer.load(paths.synonymsDir());
     }
 
     public void setStatusListener(Consumer<String> statusListener) { this.statusListener = statusListener; }
-    private void status(String s) { log.info("Dictation: {}", s); if (statusListener != null) try { statusListener.accept(s); } catch (Exception ignored) {} }
+    private void status(String s) {
+        log.info("Dictation: {}", s);
+        if (statusListener != null) try { statusListener.accept(s); } catch (Exception ignored) {}
+    }
 
     public synchronized void start() throws Exception {
         if (running.get()) return;
@@ -64,7 +78,7 @@ public class DictationController implements AutoCloseable {
         float carry = 0.2f;
         segmenter = new SpeechSegmenter(sr, silenceThr, silenceMs, minDur, maxDur, carry);
         segmenter.setOnSegment(this::onSegment);
-        mic = new MicCapture(sr, chunk, settings.audio_mic);
+        mic = new MicCapture(sr, chunk, AutoAudioSelector.resolveMicHint(settings));
         mic.setConsumer(segmenter::accept);
         mic.start();
         running.set(true);
@@ -82,12 +96,24 @@ public class DictationController implements AutoCloseable {
 
     public boolean isRunning() { return running.get(); }
 
+    /** Synchronous, testable segment processing (bypasses mic/threading; forces running context). */
+    void processForTest(float[] samples) {
+        boolean prev = running.get();
+        running.set(true);
+        try {
+            processSegment(samples);
+        } finally {
+            running.set(prev);
+        }
+    }
+
     private void onSegment(float[] samples) {
         if (!running.get()) return;
         exec.submit(() -> processSegment(samples));
     }
 
     private void processSegment(float[] samples) {
+        if (!running.get()) return;
         Path tmp = null;
         try {
             Path dir = paths.dataDir().resolve("tmp");
@@ -98,8 +124,24 @@ public class DictationController implements AutoCloseable {
             TranscriptionResult tr = stt.transcribe(tmp, langHint).join();
             String text = tr.text() == null ? "" : tr.text().trim();
             if (text.isEmpty()) return;
+            if (!running.get()) return; // stopped while transcribing: do not inject/persist stale segment
             String srcLang = tr.language() != null ? tr.language() : nvl(langHint, "auto");
             String prepared = synonyms.apply(text, srcLang);
+
+            // Voice-editing commands (backspace/delete/select/move/enter/etc.) are interpreted on the
+            // recognized transcript and executed as keyboard/mouse/cursor actions at the focused caret.
+            VoiceCommandInterpreter.Interpretation interp = commands.interpret(prepared);
+            if (interp.command()) {
+                if (!running.get()) { status("discarded command (stopped): " + interp.description()); return; }
+                boolean ok = input.executeAll(interp.actions(), false);
+                status((ok ? "command: " : "command-failed: ") + interp.description());
+                if (history != null) {
+                    try { history.save(TranslationRecord.ofNew(prepared, srcLang, "[" + interp.description() + "]", srcLang, "dictation-cmd", null, "mic")); } catch (Exception e) { log.debug("history save: {}", e.getMessage()); }
+                }
+                return;
+            }
+
+            // Dictation text: insert at caret (typing replaces any current selection).
             String outText = prepared;
             String tgtLang = nvl(settings.target_language, "en");
             boolean insertTranslated = "translated".equalsIgnoreCase(nvl(settings.dictation_insert_mode, "transcript"));
@@ -107,20 +149,24 @@ public class DictationController implements AutoCloseable {
                 try {
                     String translated = translator.translate(prepared, srcLang, tgtLang).join();
                     if (translated == null || translated.isBlank() || TranslationPostProcessor.isRepetitive(translated, prepared)) {
-                        log.debug("translation empty/repetitive, keeping source text");
-                        outText = prepared;
-                    } else {
-                        outText = translated;
+                        status("translation unavailable/invalid for this segment (no text inserted)");
+                        return;
                     }
-                } catch (Exception e) { log.warn("translate failed, injecting transcript: {}", e.getMessage()); outText = prepared; }
+                    outText = translated;
+                } catch (Exception e) {
+                    status("translation failed (no text inserted): " + e.getMessage());
+                    return;
+                }
             } else {
                 tgtLang = srcLang;
                 outText = prepared;
             }
-            String inject = outText;
-            if (!inject.endsWith(" ") && !inject.endsWith("\n")) inject = inject + " ";
-            boolean ok = injector.inject(inject);
-            status((ok ? "injected: " : "result: ") + preview(outText));
+
+            // Insert (replaces any current selection) into the secured external target
+            if (!running.get()) { status("discarded (stopped): " + preview(outText)); return; }
+            String toType = outText.endsWith(" ") || outText.endsWith("\n") ? outText : outText + " ";
+            boolean ok = input.executeAll(java.util.List.of(com.gek.inject.InputAction.typeText(toType)), false);
+            status((ok ? "injected: " : "not-injected (target not secured): ") + preview(outText));
             if (history != null) {
                 try { history.save(TranslationRecord.ofNew(prepared, srcLang, insertTranslated ? outText : prepared, insertTranslated ? tgtLang : srcLang, "dictation", null, "mic")); } catch (Exception e) { log.debug("history save: {}", e.getMessage()); }
             }

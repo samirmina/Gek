@@ -16,9 +16,7 @@ import com.gek.db.HistoryRepository;
 import com.gek.inference.EngineFactory;
 import com.gek.inference.SidecarClient;
 import com.gek.inject.GlobalHotkey;
-import com.gek.inject.TextInjector;
 import com.gek.inject.WindowsGlobalHotkey;
-import com.gek.inject.WindowsTextInjector;
 import com.gek.ui.ControlWindow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,7 +51,6 @@ public final class Main {
                 || "sidecar".equalsIgnoreCase(settings.inference_mode)
                 || "python".equalsIgnoreCase(settings.inference_mode);
         EngineFactory.Engines engines = EngineFactory.create(paths, settings, explicitSidecar);
-        TextInjector injector = WindowsTextInjector.bestEffort();
         TtsEngine tts;
         if (PlatformSupport.isWindows()) {
             tts = new WindowsSapiTtsEngine();
@@ -63,7 +60,8 @@ public final class Main {
             tts = new NoopTtsEngine();
         }
         AppDucker ducker = PlatformSupport.isWindows() ? new WindowsAppDucker() : new LinuxNoopAppDucker();
-        DictationController dictation = new DictationController(paths, settings, engines.stt(), engines.translator(), injector, history);
+        DictationController dictation = new DictationController(paths, settings, engines.stt(), engines.translator(), history);
+        ChatVoiceTypingController chatTyping = new ChatVoiceTypingController(paths, settings, engines.stt(), engines.translator(), history);
         LiveTranslateController live = new LiveTranslateController(paths, settings, engines.stt(), engines.translator(), history);
         live.setTtsEngine(tts);
         live.setDucker(ducker);
@@ -98,13 +96,16 @@ public final class Main {
                     hotkey = lhk;
                 }
             } catch (Throwable t) { log.warn("Global hotkey init failed: {}", t.getMessage()); }
-            ControlWindow w = new ControlWindow(paths, settings, store, dictation, live, engines.sidecarOrNull(), hotkey, history, caps, injector, tts, ducker);
+            ControlWindow w = new ControlWindow(paths, settings, store, dictation, chatTyping, live, engines.sidecarOrNull(), hotkey, history, caps, tts, ducker);
             ref[0] = w;
-            w.setVisible(true);
+            // Overlay-first like Windows voice typing: avoid showing/focusing the main app window on startup.
+            // Primary interaction is global hotkey + compact floating overlay; main window is on-demand (tray/menu).
+            w.showPrimaryOverlay();
             GlobalHotkey hk = hotkey;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try { if (hk != null) hk.close(); } catch (Exception ignored) {}
                 try { dictation.close(); } catch (Exception ignored) {}
+                try { chatTyping.close(); } catch (Exception ignored) {}
                 try { live.close(); } catch (Exception ignored) {}
                 try { engines.close(); } catch (Exception ignored) {}
                 try { history.close(); } catch (Exception ignored) {}

@@ -1,5 +1,11 @@
 package com.gek.ui;
 
+import com.gek.core.PlatformSupport;
+import com.sun.jna.Native;
+import com.sun.jna.Pointer;
+import com.sun.jna.platform.win32.User32;
+import com.sun.jna.platform.win32.WinDef;
+
 import javax.swing.*;
 import java.awt.*;
 
@@ -76,7 +82,10 @@ public class HudWindow extends JWindow {
             meta.setText(m == null ? " " : m);
             pack();
             positionBottomRight();
-            if (!isVisible()) setVisible(true);
+            if (!isVisible()) {
+                setFocusableWindowState(false);
+                setVisible(true);
+            }
         });
     }
 
@@ -89,5 +98,34 @@ public class HudWindow extends JWindow {
     public void setHudOpacity(double opacity) {
         float a = (float)Math.max(0.2, Math.min(1.0, opacity));
         try { setOpacity(a); } catch (Throwable ignored) {}
+    }
+
+    @Override
+    public void addNotify() {
+        super.addNotify();
+        applyNonActivatingStyleIfWindows();
+    }
+
+    /**
+     * Best-effort: make HUD non-activating on Windows so it never steals focus from
+     * the external injection target (WS_EX_NOACTIVATE).
+     */
+    private void applyNonActivatingStyleIfWindows() {
+        if (!PlatformSupport.isWindows()) return;
+        try {
+            Pointer p = Native.getComponentPointer(this);
+            if (p == null || Pointer.nativeValue(p) == 0) return;
+            WinDef.HWND hwnd = new WinDef.HWND(p);
+            final int GWL_EXSTYLE = -20;
+            final int WS_EX_NOACTIVATE = 0x08000000;
+            final int WS_EX_TOOLWINDOW = 0x00000080;
+            int ex = User32.INSTANCE.GetWindowLong(hwnd, GWL_EXSTYLE);
+            int want = ex | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+            if (want != ex) {
+                User32.INSTANCE.SetWindowLong(hwnd, GWL_EXSTYLE, want);
+            }
+        } catch (Throwable ignored) {
+            // non-fatal; Swing focusableWindowState(false) remains as fallback
+        }
     }
 }

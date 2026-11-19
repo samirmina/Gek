@@ -18,7 +18,7 @@ import java.util.concurrent.CompletableFuture;
  * Prefers in-process libwhisper via JNA shim when available (zero subprocess/Python);
  * falls back to whisper.cpp subprocess backend when shim is unavailable but CLI+GGML are present.
  */
-public class NativeSpeechToTextEngine implements SpeechToTextEngine {
+public class NativeSpeechToTextEngine implements StreamingSpeechToTextEngine {
     private final AppPaths paths;
     private final AppSettings settings;
     private final SpeechToTextEngine delegate;
@@ -31,6 +31,19 @@ public class NativeSpeechToTextEngine implements SpeechToTextEngine {
         this.settings = settings;
         String requested = settings != null && settings.whisper_model != null ? settings.whisper_model : "small";
         NativeRuntimeProbe.SttRuntime jvmRt = NativeRuntimeProbe.resolveInJvmSttRuntime(paths, requested);
+        NativeRuntimeProbe.SttRuntime resolved = jvmRt.usable() ? jvmRt : NativeRuntimeProbe.resolveSttRuntime(paths, requested);
+
+        // Prefer a persistent warm whisper-server backend when available (keeps model loaded;
+        // accelerates repeated transcribe/streaming window decodes). Falls back to shim/CLI.
+        WhisperServerSttEngine server = resolved.usable() ? WhisperServerSttEngine.tryCreate(paths, settings, resolved) : null;
+        if (server != null) {
+            this.delegate = server;
+            this.runtime = resolved;
+            this.inJvm = false;
+            this.reason = "Warm whisper-server STT backend active (model kept loaded). " + server.reason();
+            return;
+        }
+
         if (jvmRt.usable()) {
             WhisperShimSttEngine shim = new WhisperShimSttEngine(paths, settings);
             this.delegate = shim;
@@ -38,7 +51,7 @@ public class NativeSpeechToTextEngine implements SpeechToTextEngine {
             this.inJvm = true;
             this.reason = "In-process JVM STT ready (libwhisper JNA shim, no subprocess/Python). " + shim.reason();
         } else {
-            NativeRuntimeProbe.SttRuntime procRt = NativeRuntimeProbe.resolveSttRuntime(paths, requested);
+            NativeRuntimeProbe.SttRuntime procRt = resolved;
             this.delegate = null;
             this.runtime = procRt;
             this.inJvm = false;
@@ -138,8 +151,14 @@ public class NativeSpeechToTextEngine implements SpeechToTextEngine {
             while ((line = br.readLine()) != null) {
                 String t = line.trim();
                 if (t.isEmpty()) continue;
-                // skip progress/log lines
-                if (t.startsWith("whisper_") || t.startsWith("main:") || t.startsWith("system_info") || t.startsWith("ggml_")) continue;
+                // skip progress/log lines and whisper.cpp runtime noise (stdout/stderr, incl. CUDA init)
+                if (t.startsWith("whisper_") || t.startsWith("main:") || t.startsWith("system_info") || t.startsWith("ggml_")
+                        || t.startsWith("load_backend:") || t.startsWith("read_audio_data:") || t.startsWith("whisper_backend")
+                        || t.startsWith("register_backend:") || t.startsWith("init_backend:") || t.startsWith("gguf_")
+                        || t.startsWith("sampling:") || t.startsWith("whisper_init") || t.startsWith("whisper_model_load")
+                        || t.startsWith("ggml_cuda_init") || t.startsWith("Device ") || t.startsWith("CUDA0")
+                        || t.contains("loaded CPU backend from") || t.contains("trying to decode with miniaudio")
+                        || t.contains("compute capability") || t.contains("CUDA devices")) continue;
                 // strip "[00:00:00.000 --> 00:00:02.000] text"
                 if (t.startsWith("[") && t.contains("]")) {
                     int idx = t.indexOf(']');
@@ -153,6 +172,7 @@ public class NativeSpeechToTextEngine implements SpeechToTextEngine {
                     }
                 }
                 if (t.isEmpty() || t.equals("[BLANK_AUDIO]")) continue;
+                if (t.startsWith("[_BEG_]") || t.startsWith("[_TT_")) continue;
                 if (out.length() > 0) out.append(' ');
                 out.append(t);
             }
@@ -181,4 +201,15 @@ public class NativeSpeechToTextEngine implements SpeechToTextEngine {
     public String reason() { return reason; }
     public boolean runtimeUsable() { return runtime.usable(); }
     public boolean inJvm() { return inJvm; }
+
+    @Override
+    public StreamingSttSession startSession(String languageHint, StreamingTranscriptionListener listener) {
+        SpeechToTextEngine backend = delegate != null ? delegate : this;
+        java.nio.file.Path tmp = paths != null ? paths.dataDir().resolve("tmp") : null;
+        return new WindowedStreamingSession(backend, languageHint, listener, tmp);
+    }
+
+    /** Partials available when an STT backend is usable (warmest when in-JVM). */
+    @Override
+    public boolean streamingAvailable() { return runtimeUsable(); }
 }

@@ -2,10 +2,12 @@ package com.gek.inference;
 
 import com.gek.core.AppPaths;
 import com.gek.core.AppSettings;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -13,12 +15,22 @@ class SidecarProtocolSmokeTest {
 
     @Test
     void pingAndGracefulErrorsWithoutMlDeps() throws Exception {
-        // Requires python3 and bridge script in repo; verifiable in WSL2.
+        // Requires a usable python3 and bridge script in repo; verifiable in environments with Python installed.
         String py = "python3";
-        try { new ProcessBuilder(py, "--version").start().waitFor(); } catch (Exception e) { return; }
+        boolean pythonUsable = false;
+        try {
+            Process p = new ProcessBuilder(py, "--version").redirectErrorStream(true).start();
+            String out = new String(p.getInputStream().readAllBytes());
+            boolean finished = p.waitFor(5, TimeUnit.SECONDS);
+            pythonUsable = finished && p.exitValue() == 0 && out.toLowerCase().contains("python");
+        } catch (Exception ignored) {
+            pythonUsable = false;
+        }
+        Assumptions.assumeTrue(pythonUsable, "Skipping: usable python3 runtime not available (required for sidecar smoke test)");
+
         AppPaths paths = AppPaths.resolve();
         Path script = paths.projectRoot().resolve("gek-java/bridge/inference_server.py");
-        if (!Files.exists(script)) return;
+        Assumptions.assumeTrue(Files.exists(script), "Skipping: sidecar bridge script not found: " + script);
 
         AppSettings s = AppSettings.defaults();
         s.sidecar_python = py;

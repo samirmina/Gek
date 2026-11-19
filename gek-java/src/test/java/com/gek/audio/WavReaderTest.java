@@ -22,4 +22,25 @@ class WavReaderTest {
         assertEquals(in.length, out.samples().length);
         assertTrue(out.durationSeconds() > 0.09 && out.durationSeconds() < 0.11);
     }
+
+    @Test
+    void readMonoDefaultOverload() throws Exception {
+        Path p = tmp.resolve("rt2.wav");
+        float[] in = new float[800];
+        for (int i = 0; i < in.length; i++) in[i] = (float) Math.sin(i / 10.0);
+        WavWriter.writeFloatMono16k(p, in);
+        WavReader.AudioData out = WavReader.readMono(p);
+        assertEquals(16000, out.sampleRate());
+        assertEquals(1, out.channels());
+        assertEquals(in.length, out.samples().length);
+        assertEquals(in.length / 16000.0, out.durationSeconds(), 1e-9);
+    }
+
+    @Test
+    void durationSecondsZeroWhenSampleRateNonPositive() {
+        WavReader.AudioData data = new WavReader.AudioData(new float[]{0.1f, 0.2f}, 0, 1);
+        assertEquals(0.0, data.durationSeconds());
+        WavReader.AudioData dataNeg = new WavReader.AudioData(new float[]{0.1f}, -1, 1);
+        assertEquals(0.0, dataNeg.durationSeconds());
+    }
 }

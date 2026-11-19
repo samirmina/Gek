@@ -40,6 +40,8 @@ public class WindowsSapiTtsEngine implements TtsEngine {
         cmd.add("powershell.exe");
         cmd.add("-NoProfile");
         cmd.add("-NonInteractive");
+        cmd.add("-WindowStyle");
+        cmd.add("Hidden");
         cmd.add("-ExecutionPolicy");
         cmd.add("Bypass");
         cmd.add("-Command");

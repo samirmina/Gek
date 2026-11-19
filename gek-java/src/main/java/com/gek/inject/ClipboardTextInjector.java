@@ -73,5 +73,5 @@ public class ClipboardTextInjector implements TextInjector {
         p.waitFor();
     }
 
-    public static TextInjector bestEffort() { return new ClipboardTextInjector(); }
+    public static TextInjector forPlatform() { return new ClipboardTextInjector(); }
 }

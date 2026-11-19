@@ -8,8 +8,9 @@ import java.awt.datatransfer.*;
 import java.awt.event.KeyEvent;
 
 /**
- * Best-effort caret injection for Windows (validate on Windows).
+ * Caret injection for Windows (validate on Windows).
  * Strategy: save clipboard -> set text -> Ctrl+V via Robot -> restore clipboard.
+ * Requires a secured external injection target (never injects into GEK UI).
  */
 public class WindowsTextInjector implements TextInjector {
     private static final Logger log = LoggerFactory.getLogger(WindowsTextInjector.class);
@@ -19,6 +20,10 @@ public class WindowsTextInjector implements TextInjector {
     @Override public boolean inject(String text) {
         if (text == null || text.isEmpty()) return false;
         try {
+            if (!WindowsFocusManager.restoreForeground()) {
+                log.debug("Injection skipped: external target not secured");
+                return false;
+            }
             return pasteViaClipboard(text);
         } catch (Exception e) {
             log.error("Clipboard paste inject failed: {}", e.getMessage(), e);
@@ -68,9 +73,9 @@ public class WindowsTextInjector implements TextInjector {
         }
     }
 
-    public static TextInjector bestEffort() {
+    public static TextInjector forPlatform() {
         String os = System.getProperty("os.name", "").toLowerCase();
         if (os.contains("win")) return new WindowsTextInjector();
-        return new ClipboardTextInjector();
+        return ClipboardTextInjector.forPlatform();
     }
 }

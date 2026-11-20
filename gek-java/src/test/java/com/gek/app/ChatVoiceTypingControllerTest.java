@@ -308,4 +308,36 @@ class ChatVoiceTypingControllerTest {
             assertEquals(1, input.actions.size());
         }
     }
+
+    @Test
+    void chatFlowIsIsolatedFromLiveCaptionsAndHud() throws Exception {
+        // Isolation goal: chat voice typing only writes dictation records (never "live"),
+        // only emits chat partial/status callbacks, and injects at caret (no HUD/transcript coupling).
+        AppSettings s = AppSettings.defaults();
+        s.source_language = "en";
+        s.target_language = "en";
+        FakeInput input = new FakeInput();
+        List<String> statuses = new CopyOnWriteArrayList<>();
+        List<String> partials = new CopyOnWriteArrayList<>();
+        try (HistoryRepository repo = new HistoryRepository(AppPaths.resolve().dbPath());
+             ChatVoiceTypingController c = newController(s, new FakeTranslator(), input, repo)) {
+            c.setStatusListener(statuses::add);
+            c.setPartialListener(partials::add);
+            c.finalizeForTest("hello there", "en");
+            c.finalizeForTest("select all", "en"); // command path
+            c.finalizeForTest("   ", "en");         // blank -> no history/injection
+
+            assertEquals(2, repo.count(), "only non-blank utterances/commands persisted");
+            for (TranslationRecord r : repo.recent(10)) {
+                assertTrue("dictation".equals(r.sourceName()) || "dictation-cmd".equals(r.sourceName()),
+                        "chat typing must never write live-caption history: " + r.sourceName());
+                assertNotEquals("live", r.sourceName());
+                assertEquals("mic", r.audioSource());
+            }
+            // chat API surface is partial/status only (no HUD/transcript listener); status reflects chat outcomes
+            assertTrue(statuses.stream().anyMatch(m -> m.startsWith("injected:")));
+            assertTrue(statuses.stream().anyMatch(m -> m.startsWith("command:")));
+            assertFalse(partials.isEmpty(), "partial listener receives finalize/reset updates");
+        }
+    }
 }

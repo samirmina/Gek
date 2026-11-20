@@ -2,6 +2,7 @@ package com.gek.inference;
 
 import com.gek.audio.AudioChunk;
 import com.gek.audio.WavWriter;
+import com.gek.text.TranscriptSanitizer;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,8 +19,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Backend-agnostic streaming STT session that produces live partials by periodically re-decoding a
- * rolling audio window through a one-shot {@link SpeechToTextEngine}. When backed by a warm/in-process
- * engine this yields low-latency chat-style partials without model reload per segment.
+ * rolling (or accumulating) audio window through a one-shot {@link SpeechToTextEngine}. When backed
+ * by a warm/in-process engine this yields low-latency chat-style partials without model reload.
  *
  * <p>Feed audio via {@link #accept(AudioChunk)} (16 kHz mono float). Partials are emitted on a
  * schedule while new audio arrives; {@link #stop()} performs a final decode and emits
@@ -29,13 +30,16 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class WindowedStreamingSession implements StreamingSttSession {
     private static final float SAMPLE_RATE = 16000f;
     private static final long PARTIAL_INTERVAL_MS = 700;
-    private static final float MAX_WINDOW_SECONDS = 20f;   // rolling window for partial decode
+    static final float DEFAULT_MAX_WINDOW_SECONDS = 20f;   // rolling window for partial decode (live captions)
     private static final float MIN_PARTIAL_SECONDS = 0.35f;
+    /** Large accumulating window for chat/dictation (avoid dropping older words in long utterances). */
+    public static final float ACCUMULATING_MAX_WINDOW_SECONDS = 3600f;
 
     private final SpeechToTextEngine engine;
     private final String languageHint;
     private final StreamingTranscriptionListener listener;
     private final Path tmpDir;
+    private final float maxWindowSeconds;
 
     private final Object lock = new Object();
     private final List<float[]> chunks = new ArrayList<>();
@@ -54,10 +58,17 @@ public final class WindowedStreamingSession implements StreamingSttSession {
 
     public WindowedStreamingSession(SpeechToTextEngine engine, String languageHint,
                                     StreamingTranscriptionListener listener, Path tmpDir) {
+        this(engine, languageHint, listener, tmpDir, DEFAULT_MAX_WINDOW_SECONDS);
+    }
+
+    public WindowedStreamingSession(SpeechToTextEngine engine, String languageHint,
+                                    StreamingTranscriptionListener listener, Path tmpDir,
+                                    float maxWindowSeconds) {
         this.engine = Objects.requireNonNull(engine, "engine");
         this.languageHint = languageHint;
         this.listener = listener == null ? new StreamingTranscriptionListener(){} : listener;
         this.tmpDir = tmpDir;
+        this.maxWindowSeconds = maxWindowSeconds > 0 ? maxWindowSeconds : DEFAULT_MAX_WINDOW_SECONDS;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "gek-chat-partial");
             t.setDaemon(true);
@@ -84,7 +95,8 @@ public final class WindowedStreamingSession implements StreamingSttSession {
     }
 
     private void trimLocked() {
-        int max = (int) (MAX_WINDOW_SECONDS * SAMPLE_RATE);
+        int max = (int) (maxWindowSeconds * SAMPLE_RATE);
+        if (max <= 0) return;
         while (totalSamples > max && chunks.size() > 1) {
             float[] removed = chunks.remove(0);
             totalSamples -= (removed == null ? 0 : removed.length);
@@ -133,7 +145,7 @@ public final class WindowedStreamingSession implements StreamingSttSession {
                         if (err != null) {
                             listener.onError(err);
                         } else if (seq == decodeSeq.get()) {
-                            String t = text == null ? "" : text.trim();
+                            String t = TranscriptSanitizer.sanitize(text);
                             if (isFinal) {
                                 lastText.set(t);
                                 finishFinal(t);
@@ -141,6 +153,10 @@ public final class WindowedStreamingSession implements StreamingSttSession {
                             } else if (!t.isEmpty() && !t.equals(lastText.get())) {
                                 lastText.set(t);
                                 listener.onPartial(t);
+                            } else if (t.isEmpty() && !TranscriptSanitizer.isBlankOrArtifact(text)) {
+                                // sanitized to empty but original wasn't pure artifact -> keep last stable
+                            } else if (t.isEmpty() && !lastText.get().isEmpty() && TranscriptSanitizer.isBlankOrArtifact(text)) {
+                                // artifact-only partial; don't regress visible text
                             }
                         }
                     } finally {

@@ -7,7 +7,6 @@ import com.gek.core.AppSettings;
 import com.gek.db.HistoryRepository;
 import com.gek.db.TranslationRecord;
 import com.gek.inference.SpeechToTextEngine;
-import com.gek.inference.StreamingSpeechToTextEngine;
 import com.gek.inference.StreamingSttSession;
 import com.gek.inference.StreamingTranscriptionListener;
 import com.gek.inference.TranslationEngine;
@@ -16,6 +15,7 @@ import com.gek.inject.InputExecutor;
 import com.gek.inject.RobotInputExecutor;
 import com.gek.inject.VoiceCommandInterpreter;
 import com.gek.text.SynonymReplacer;
+import com.gek.text.TranscriptSanitizer;
 import com.gek.text.TranslationPostProcessor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,12 +106,9 @@ public class ChatVoiceTypingController implements AutoCloseable {
                 status("error: " + (t == null ? "unknown" : rootMsg(t)));
             }
         };
-        StreamingSttSession session;
-        if (stt instanceof StreamingSpeechToTextEngine sse) {
-            session = sse.startSession(langHint, listener);
-        } else {
-            session = new WindowedStreamingSession(stt, langHint, listener, tmpDir);
-        }
+        // Accumulating window for chat/dictation so long utterances don't lose older words (rolling 20s is for live captions).
+        StreamingSttSession session = new WindowedStreamingSession(stt, langHint, listener, tmpDir,
+                WindowedStreamingSession.ACCUMULATING_MAX_WINDOW_SECONDS);
         sessionRef.set(session);
 
         int sr = 16000;
@@ -152,7 +149,8 @@ public class ChatVoiceTypingController implements AutoCloseable {
     /** Finalize recognized text: commands or dictation insert at caret (chat/typing logic). */
     private void finalizeText(String rawText, String langHint) {
         try {
-            String text = rawText == null ? "" : rawText.trim();
+            // Strip non-speech artifacts (e.g. [BLANK_AUDIO], (blank audio)) so they are never injected/copied.
+            String text = TranscriptSanitizer.sanitize(rawText);
             if (text.isEmpty()) { status("stopped (no speech)"); partial(""); return; }
             String srcLang = nvl(langHint, "auto");
             String prepared = synonyms.apply(text, srcLang);

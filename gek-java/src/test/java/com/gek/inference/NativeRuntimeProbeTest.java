@@ -154,4 +154,59 @@ class NativeRuntimeProbeTest {
         assertNotNull(NativeRuntimeProbe.resolveDiarizationRuntime(paths));
         assertNotNull(NativeRuntimeProbe.findGgmlWhisperModels(paths));
     }
+
+    @Test
+    void findWhisperBinariesPreferNativeBinOnWindowsLayout() throws Exception {
+        Path root = tmp.resolve("proj-bin");
+        Files.createDirectories(root.resolve("gek-java/native/bin"));
+        // simulate Windows .exe layout even if running on non-Windows; method handles OS branching
+        Path serverExe = root.resolve("gek-java/native/bin/whisper-server.exe");
+        Path streamExe = root.resolve("gek-java/native/bin/whisper-stream.exe");
+        Path cliExe = root.resolve("gek-java/native/bin/whisper-cli.exe");
+        Files.writeString(serverExe, "x");
+        Files.writeString(streamExe, "x");
+        Files.writeString(cliExe, "x");
+
+        String prev = System.getProperty("gek.projectRoot");
+        System.setProperty("gek.projectRoot", root.toString());
+        try {
+            AppPaths paths = AppPaths.resolve();
+            // On Windows these resolve to absolute exe paths; on non-Windows PATH lookup may differ,
+            // but presence in native/bin should still be considered for exe files.
+            Optional<String> server = NativeRuntimeProbe.findWhisperServerBinary(paths);
+            Optional<String> stream = NativeRuntimeProbe.findWhisperStreamBinary(paths);
+            Optional<String> cli = NativeRuntimeProbe.findWhisperCppBinary(paths);
+            String os = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
+            if (os.contains("win")) {
+                assertTrue(server.isPresent() && server.get().endsWith("whisper-server.exe"));
+                assertTrue(stream.isPresent() && stream.get().endsWith("whisper-stream.exe"));
+                assertTrue(cli.isPresent() && cli.get().endsWith("whisper-cli.exe"));
+            } else {
+                // non-Windows will not select .exe files from disk; ensure calls are safe
+                assertNotNull(server);
+                assertNotNull(stream);
+                assertNotNull(cli);
+            }
+        } finally {
+            if (prev == null) System.clearProperty("gek.projectRoot"); else System.setProperty("gek.projectRoot", prev);
+        }
+    }
+
+    @Test
+    void sttRuntimeReasonExplainsMissingAssets() throws Exception {
+        Path root = tmp.resolve("empty-proj");
+        Files.createDirectories(root.resolve("resources/models"));
+        String prev = System.getProperty("gek.projectRoot");
+        System.setProperty("gek.projectRoot", root.toString());
+        try {
+            AppPaths paths = AppPaths.resolve();
+            NativeRuntimeProbe.SttRuntime r = NativeRuntimeProbe.resolveSttRuntime(paths, "small");
+            assertNotNull(r);
+            assertFalse(r.usable());
+            assertNotNull(r.reason());
+            assertTrue(r.reason().toLowerCase(java.util.Locale.ROOT).contains("not ready"));
+        } finally {
+            if (prev == null) System.clearProperty("gek.projectRoot"); else System.setProperty("gek.projectRoot", prev);
+        }
+    }
 }

@@ -52,7 +52,7 @@ public class ChatTypingWindow extends JWindow {
     public void showPartial(String text) {
         SwingUtilities.invokeLater(() -> {
             String t = text == null ? "" : text.trim();
-            partial.setText(trim(t, 320));
+            partial.setText(tail(t, 1200));
             partial.setToolTipText(t.isEmpty() ? null : t);
             meta.setText(t.isEmpty() ? "Voice typing" : "Voice typing (listening…)");
             pack();
@@ -101,10 +101,12 @@ public class ChatTypingWindow extends JWindow {
         } catch (Exception ignored) { setLocationRelativeTo(null); }
     }
 
-    private static String trim(String s, int max) {
+    /** Keep the tail (most recent text) visible when content exceeds the display budget. */
+    private static String tail(String s, int max) {
         if (s == null) return "";
         if (s.length() <= max) return s;
-        return s.substring(0, Math.max(0, max - 1)) + "…";
+        int start = Math.max(0, s.length() - Math.max(0, max - 1));
+        return "…" + s.substring(start);
     }
 
     @Override

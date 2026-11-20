@@ -24,9 +24,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Deterministic tests for {@link ChatVoiceTypingController} finalize/caret logic.
- * Chat typing is decoupled from live captions/HUD: it injects at caret and writes
- * "dictation"/"dictation-cmd" history only (never "live"/HUD transcripts).
+ * Deterministic tests for {@link ChatVoiceTypingController} translation-oriented in-field chat typing.
+ * Partials/finals are translated and streamed/replaced into the focused external field (no overlay),
+ * finalize leaves text for review (no auto-send/trailing space), and history remains isolated as
+ * "dictation"/"dictation-cmd" (never "live"/HUD).
  */
 class ChatVoiceTypingControllerTest {
     @TempDir Path tmp;
@@ -81,11 +82,12 @@ class ChatVoiceTypingControllerTest {
     }
 
     @Test
-    void plainTranscriptInjectsTypingAndPersistsDictationHistory() throws Exception {
+    void sameLanguageFinalizeLeavesTextInFieldForReview() throws Exception {
+        // Translation-oriented chat typing: when src==tgt no translation; final text is left in field
+        // (no auto-send/trailing space) and reported as ready.
         AppSettings s = AppSettings.defaults();
         s.source_language = "en";
         s.target_language = "en";
-        s.dictation_insert_mode = "transcript";
         FakeTranslator tr = new FakeTranslator();
         FakeInput input = new FakeInput();
         List<String> statuses = new CopyOnWriteArrayList<>();
@@ -96,12 +98,12 @@ class ChatVoiceTypingControllerTest {
             c.setPartialListener(lastPartial::set);
             c.finalizeForTest("hello world", "en");
 
-            assertEquals(1, input.actions.size(), "caret injection must occur once");
+            assertEquals(1, input.actions.size(), "field update must occur once");
             assertEquals(InputAction.Kind.TYPE_TEXT, input.actions.get(0).kind());
-            assertEquals("hello world ", input.actions.get(0).text());
-            assertTrue(tr.calls.isEmpty(), "no translation expected for transcript mode/same lang");
-            assertTrue(statuses.stream().anyMatch(m -> m.startsWith("injected: ")));
-            assertEquals("", lastPartial.get(), "partial cleared after finalize (chat UI reset)");
+            assertEquals("hello world", input.actions.get(0).text(), "left for review (no trailing space)");
+            assertTrue(tr.calls.isEmpty(), "no translation when src==tgt");
+            assertTrue(statuses.stream().anyMatch(m -> m.startsWith("ready: ")), "final left ready for review");
+            assertEquals("", lastPartial.get(), "partial cleared after finalize");
 
             assertEquals(1, repo.count());
             TranslationRecord r = repo.recent(1).get(0);
@@ -115,15 +117,16 @@ class ChatVoiceTypingControllerTest {
     }
 
     @Test
-    void emptyOrBlankTranscriptInjectsNothingAndClearsPartial() throws Exception {
+    void emptyOrBlankTranscriptClearsFieldAndPartial() throws Exception {
         AppSettings s = AppSettings.defaults();
+        s.target_language = "en";
         FakeInput input = new FakeInput();
         AtomicReference<String> lastPartial = new AtomicReference<>("speaking...");
         try (HistoryRepository repo = new HistoryRepository(AppPaths.resolve().dbPath());
              ChatVoiceTypingController c = newController(s, new FakeTranslator(), input, repo)) {
             c.setPartialListener(lastPartial::set);
             c.finalizeForTest("   ", "en");
-            assertTrue(input.actions.isEmpty());
+            assertTrue(input.actions.isEmpty(), "nothing to replace when field empty");
             assertEquals(0, repo.count());
             assertEquals("", lastPartial.get());
         }
@@ -169,11 +172,10 @@ class ChatVoiceTypingControllerTest {
     }
 
     @Test
-    void translatedInsertModeInjectsTranslation() throws Exception {
+    void translationOrientedFinalizeInjectsTranslatedText() throws Exception {
         AppSettings s = AppSettings.defaults();
         s.source_language = "es";
         s.target_language = "en";
-        s.dictation_insert_mode = "translated";
         FakeTranslator tr = new FakeTranslator();
         tr.translated = "hello world";
         FakeInput input = new FakeInput();
@@ -184,7 +186,7 @@ class ChatVoiceTypingControllerTest {
             assertEquals(1, tr.calls.size());
             assertArrayEquals(new String[]{"hola mundo", "es", "en"}, tr.calls.get(0));
             assertEquals(1, input.actions.size());
-            assertEquals("hello world ", input.actions.get(0).text());
+            assertEquals("hello world", input.actions.get(0).text(), "translated text left for review");
             TranslationRecord r = repo.recent(1).get(0);
             assertEquals("hola mundo", r.originalText());
             assertEquals("es", r.originalLang());
@@ -195,11 +197,10 @@ class ChatVoiceTypingControllerTest {
     }
 
     @Test
-    void translatedInsertModeBlankTranslationDoesNotInject() throws Exception {
+    void translationUnavailableFallsBackToTranscriptInField() throws Exception {
         AppSettings s = AppSettings.defaults();
         s.source_language = "es";
         s.target_language = "en";
-        s.dictation_insert_mode = "translated";
         FakeTranslator tr = new FakeTranslator();
         tr.translated = "   ";
         FakeInput input = new FakeInput();
@@ -208,18 +209,24 @@ class ChatVoiceTypingControllerTest {
              ChatVoiceTypingController c = newController(s, tr, input, repo)) {
             c.setStatusListener(statuses::add);
             c.finalizeForTest("hola", "es");
-            assertTrue(input.actions.isEmpty());
-            assertEquals(0, repo.count());
-            assertTrue(statuses.stream().anyMatch(m -> m.contains("translation unavailable/invalid")));
+            assertEquals(1, input.actions.size(), "safe fallback: keep transcript instead of dropping speech");
+            assertEquals("hola", input.actions.get(0).text());
+            assertEquals(1, repo.count());
+            TranslationRecord r = repo.recent(1).get(0);
+            assertEquals("hola", r.originalText());
+            assertEquals("hola", r.translatedText(), "fallback persists transcript");
+            assertEquals("es", r.translatedLang());
+            assertEquals("dictation", r.sourceName());
+            assertTrue(statuses.stream().anyMatch(m -> m.contains("translation unavailable/invalid") && m.contains("inserted transcript")));
+            assertTrue(statuses.stream().anyMatch(m -> m.contains("ready: ") || m.contains("not-injected")));
         }
     }
 
     @Test
-    void translatedInsertModeExceptionDoesNotInject() throws Exception {
+    void translationExceptionFallsBackToTranscriptInField() throws Exception {
         AppSettings s = AppSettings.defaults();
         s.source_language = "es";
         s.target_language = "en";
-        s.dictation_insert_mode = "translated";
         FakeTranslator tr = new FakeTranslator();
         tr.throwOnTranslate = new RuntimeException("boom");
         FakeInput input = new FakeInput();
@@ -228,28 +235,100 @@ class ChatVoiceTypingControllerTest {
              ChatVoiceTypingController c = newController(s, tr, input, repo)) {
             c.setStatusListener(statuses::add);
             c.finalizeForTest("hola", "es");
-            assertTrue(input.actions.isEmpty());
-            assertEquals(0, repo.count());
-            assertTrue(statuses.stream().anyMatch(m -> m.contains("translation failed")));
+            assertEquals(1, input.actions.size(), "safe fallback: keep transcript instead of dropping speech");
+            assertEquals("hola", input.actions.get(0).text());
+            assertEquals(1, repo.count());
+            TranslationRecord r = repo.recent(1).get(0);
+            assertEquals("hola", r.originalText());
+            assertEquals("hola", r.translatedText(), "fallback persists transcript");
+            assertEquals("es", r.translatedLang());
+            assertEquals("dictation", r.sourceName());
+            assertTrue(statuses.stream().anyMatch(m -> m.contains("translation failed") && m.contains("inserted transcript")));
+            assertTrue(statuses.stream().anyMatch(m -> m.contains("ready: ") || m.contains("not-injected")));
         }
     }
 
     @Test
-    void sameLanguageSkipsTranslationEvenIfModeTranslated() throws Exception {
+    void arabicDetectedTranscriptFallsBackToTranscriptWhenTranslationUnavailable() throws Exception {
         AppSettings s = AppSettings.defaults();
-        s.source_language = "en";
+        s.source_language = "auto";
         s.target_language = "en";
-        s.dictation_insert_mode = "translated";
         FakeTranslator tr = new FakeTranslator();
+        tr.translated = ""; // unavailable/invalid translation
         FakeInput input = new FakeInput();
+        List<String> statuses = new CopyOnWriteArrayList<>();
+        String arabic = "مرحبا كيف حالك";
         try (HistoryRepository repo = new HistoryRepository(AppPaths.resolve().dbPath());
              ChatVoiceTypingController c = newController(s, tr, input, repo)) {
-            c.finalizeForTest("hello", "en");
-            assertTrue(tr.calls.isEmpty());
-            assertEquals("hello ", input.actions.get(0).text());
+            c.setStatusListener(statuses::add);
+            c.finalizeForTest(arabic, "ar");
+
+            assertEquals(1, tr.calls.size(), "translation-oriented: attempts ar->en");
+            assertArrayEquals(new String[]{arabic, "ar", "en"}, tr.calls.get(0));
+            assertEquals(1, input.actions.size(), "Arabic transcript must be placed in field, not dropped");
+            assertEquals(arabic, input.actions.get(0).text());
+            assertEquals(1, repo.count());
             TranslationRecord r = repo.recent(1).get(0);
+            assertEquals(arabic, r.originalText());
+            assertEquals("ar", r.originalLang(), "detected Arabic language preserved");
+            assertEquals(arabic, r.translatedText(), "fallback persists transcript when translation unavailable");
+            assertEquals("ar", r.translatedLang(), "fallback records transcript language");
+            assertEquals("dictation", r.sourceName(), "chat typing isolated from live captions");
+            assertTrue(statuses.stream().anyMatch(m -> m.contains("translation unavailable/invalid") && m.contains("inserted transcript")));
+            assertTrue(statuses.stream().anyMatch(m -> m.startsWith("ready:") || m.contains("ready:")));
+        }
+    }
+
+    @Test
+    void arabicDetectedTranscriptTranslatedWhenAvailable() throws Exception {
+        AppSettings s = AppSettings.defaults();
+        s.source_language = "auto";
+        s.target_language = "en";
+        FakeTranslator tr = new FakeTranslator();
+        tr.translated = "hello how are you";
+        FakeInput input = new FakeInput();
+        String arabic = "مرحبا كيف حالك";
+        try (HistoryRepository repo = new HistoryRepository(AppPaths.resolve().dbPath());
+             ChatVoiceTypingController c = newController(s, tr, input, repo)) {
+            c.finalizeForTest(arabic, "ar");
+
+            assertEquals(1, tr.calls.size(), "should translate detected Arabic to target");
+            assertArrayEquals(new String[]{arabic, "ar", "en"}, tr.calls.get(0));
+            assertEquals(1, input.actions.size());
+            assertEquals("hello how are you", input.actions.get(0).text(), "translated text left in field");
+            assertEquals(1, repo.count());
+            TranslationRecord r = repo.recent(1).get(0);
+            assertEquals(arabic, r.originalText());
+            assertEquals("ar", r.originalLang());
+            assertEquals("hello how are you", r.translatedText());
             assertEquals("en", r.translatedLang());
-            assertEquals("hello", r.translatedText());
+            assertEquals("dictation", r.sourceName());
+            assertEquals("mic", r.audioSource());
+        }
+    }
+
+    @Test
+    void arabicDetectedTranscriptKeptWhenTargetMatchesSource() throws Exception {
+        AppSettings s = AppSettings.defaults();
+        s.source_language = "auto";
+        s.target_language = "ar";
+        FakeTranslator tr = new FakeTranslator();
+        tr.translated = "SHOULD_NOT_BE_USED";
+        FakeInput input = new FakeInput();
+        String arabic = "مرحبا";
+        try (HistoryRepository repo = new HistoryRepository(AppPaths.resolve().dbPath());
+             ChatVoiceTypingController c = newController(s, tr, input, repo)) {
+            c.finalizeForTest(arabic, "ar");
+
+            assertTrue(tr.calls.isEmpty(), "no translation when src==tgt");
+            assertEquals(1, input.actions.size());
+            assertEquals(arabic, input.actions.get(0).text());
+            assertEquals(1, repo.count());
+            TranslationRecord r = repo.recent(1).get(0);
+            assertEquals(arabic, r.originalText());
+            assertEquals("ar", r.originalLang());
+            assertEquals(arabic, r.translatedText());
+            assertEquals("ar", r.translatedLang());
             assertEquals("dictation", r.sourceName());
         }
     }
@@ -271,21 +350,10 @@ class ChatVoiceTypingControllerTest {
     }
 
     @Test
-    void textAlreadyEndingWithSpaceNotDoubled() throws Exception {
-        AppSettings s = AppSettings.defaults();
-        FakeInput input = new FakeInput();
-        try (HistoryRepository repo = new HistoryRepository(AppPaths.resolve().dbPath());
-             ChatVoiceTypingController c = newController(s, new FakeTranslator(), input, repo)) {
-            c.finalizeForTest("hello ", "en");
-            assertEquals("hello ", input.actions.get(0).text());
-        }
-    }
-
-    @Test
     void autoLangTreatedAsAuto() throws Exception {
-        // finalizeForTest normalizes hint; "auto"/"detected" -> null/auto source semantics via nvl
         AppSettings s = AppSettings.defaults();
         s.source_language = "auto";
+        s.target_language = "en";
         FakeInput input = new FakeInput();
         try (HistoryRepository repo = new HistoryRepository(AppPaths.resolve().dbPath());
              ChatVoiceTypingController c = newController(s, new FakeTranslator(), input, repo)) {
@@ -297,8 +365,6 @@ class ChatVoiceTypingControllerTest {
 
     @Test
     void controllerRequiresInjectedExecutor() {
-        // ChatVoiceTypingController accepts null -> falls back to platform Robot executor;
-        // constructor with explicit fake proves decoupled injectable path (no HUD dependency).
         AppPaths paths = AppPaths.resolve();
         AppSettings s = AppSettings.defaults();
         FakeInput input = new FakeInput();
@@ -311,8 +377,6 @@ class ChatVoiceTypingControllerTest {
 
     @Test
     void chatFlowIsIsolatedFromLiveCaptionsAndHud() throws Exception {
-        // Isolation goal: chat voice typing only writes dictation records (never "live"),
-        // only emits chat partial/status callbacks, and injects at caret (no HUD/transcript coupling).
         AppSettings s = AppSettings.defaults();
         s.source_language = "en";
         s.target_language = "en";
@@ -334,10 +398,66 @@ class ChatVoiceTypingControllerTest {
                 assertNotEquals("live", r.sourceName());
                 assertEquals("mic", r.audioSource());
             }
-            // chat API surface is partial/status only (no HUD/transcript listener); status reflects chat outcomes
-            assertTrue(statuses.stream().anyMatch(m -> m.startsWith("injected:")));
+            assertTrue(statuses.stream().anyMatch(m -> m.startsWith("ready:")), "final text left ready in field");
             assertTrue(statuses.stream().anyMatch(m -> m.startsWith("command:")));
             assertFalse(partials.isEmpty(), "partial listener receives finalize/reset updates");
+        }
+    }
+
+    @Test
+    void streamingPartialDoesNotInjectDuringListening_singleFinalUpdateOnStop() throws Exception {
+        // Claude-like single-update flow: no in-field injection while speaking; one sanitized/composed
+        // update is written on finalize (hotkey stop).
+        AppSettings s = AppSettings.defaults();
+        s.source_language = "es";
+        s.target_language = "en";
+        FakeTranslator tr = new FakeTranslator();
+        tr.translated = "hello world";
+        FakeInput input = new FakeInput();
+        try (ChatVoiceTypingController c = newController(s, tr, input, null)) {
+            c.partialForTest("hola", "es");
+            c.partialForTest("hola mundo", "es");
+            assertTrue(input.actions.isEmpty(), "partials must not inject into the field while listening");
+
+            c.finalizeForTest("hola mundo", "es");
+            assertEquals(1, input.actions.size(), "single final update on stop");
+            assertEquals(InputAction.Kind.TYPE_TEXT, input.actions.get(0).kind());
+            assertEquals("hello world", input.actions.get(0).text(), "final translated text left for review");
+            assertTrue(tr.calls.stream().anyMatch(a -> "hola mundo".equals(a[0]) && "es".equals(a[1]) && "en".equals(a[2])));
+        }
+    }
+
+    @Test
+    void commonPrefixLengthComputesSharedPrefix() {
+        assertEquals(0, ChatVoiceTypingController.commonPrefixLength("", "hello"));
+        assertEquals(5, ChatVoiceTypingController.commonPrefixLength("hello", "hello world"));
+        assertEquals(6, ChatVoiceTypingController.commonPrefixLength("hello world", "hello there"));
+        assertEquals(0, ChatVoiceTypingController.commonPrefixLength("abc", "xyz"));
+        assertEquals(0, ChatVoiceTypingController.commonPrefixLength(null, "x"));
+    }
+
+    private static boolean hasBackspace(List<InputAction> actions, int count) {
+        for (InputAction a : actions) {
+            if (a.kind() == InputAction.Kind.BACKSPACE && a.count() == count) return true;
+        }
+        return false;
+    }
+
+    @Test
+    void streamingPartialNoInjection_translationFallbackAppliedOnFinalOnly() throws Exception {
+        AppSettings s = AppSettings.defaults();
+        s.source_language = "es";
+        s.target_language = "en";
+        FakeTranslator tr = new FakeTranslator();
+        tr.throwOnTranslate = new RuntimeException("boom");
+        FakeInput input = new FakeInput();
+        try (ChatVoiceTypingController c = newController(s, tr, input, null)) {
+            c.partialForTest("hola", "es");
+            assertTrue(input.actions.isEmpty(), "no injection while listening");
+
+            c.finalizeForTest("hola", "es");
+            assertEquals(1, input.actions.size(), "single final update on stop");
+            assertEquals("hola", input.actions.get(0).text(), "fallback to transcript on finalize when translation fails");
         }
     }
 }

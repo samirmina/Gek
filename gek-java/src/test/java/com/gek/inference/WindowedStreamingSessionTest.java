@@ -25,12 +25,14 @@ class WindowedStreamingSessionTest {
 
     static class FakeStt implements SpeechToTextEngine {
         volatile String text = "";
+        volatile String resultLang = null; // if null, defaults from hint for backward-compatible tests
         final AtomicInteger transcribeCalls = new AtomicInteger();
         @Override public CompletableFuture<Void> warmup() { return CompletableFuture.completedFuture(null); }
         @Override public CompletableFuture<TranscriptionResult> transcribe(Path wavPath, String languageHint) {
             transcribeCalls.incrementAndGet();
             assertTrue(wavPath != null && java.nio.file.Files.exists(wavPath), "decode reads a temp wav snapshot");
-            return CompletableFuture.completedFuture(new TranscriptionResult(text, languageHint == null ? "en" : languageHint, 1.0, 0.1));
+            String lang = resultLang != null ? resultLang : (languageHint == null ? "en" : languageHint);
+            return CompletableFuture.completedFuture(new TranscriptionResult(text, lang, 1.0, 0.1));
         }
         @Override public void close() {}
     }
@@ -159,5 +161,59 @@ class WindowedStreamingSessionTest {
         Thread.sleep(300);
         assertEquals(1, finals.get(), "exactly one final emission");
         assertEquals(1, closes.get(), "exactly one close notification");
+    }
+
+    @Test
+    void emitsDetectedLanguageOnPartialAndFinal() throws Exception {
+        // Regression for Arabic/plain non-English: session must propagate STT-detected language to listeners
+        // (not drop it), so chat/live can route/fallback correctly.
+        FakeStt stt = new FakeStt();
+        stt.text = "مرحبا";
+        stt.resultLang = "ar";
+        List<String> partialLangs = new CopyOnWriteArrayList<>();
+        AtomicReference<String> finalText = new AtomicReference<>();
+        AtomicReference<String> finalLang = new AtomicReference<>("unset");
+        CountDownLatch gotPartial = new CountDownLatch(1);
+        CountDownLatch closed = new CountDownLatch(1);
+        StreamingTranscriptionListener l = new StreamingTranscriptionListener() {
+            @Override public void onPartial(String text) { /* 1-arg compat */ }
+            @Override public void onPartial(String text, String language) {
+                if (text != null && !text.isBlank()) { partialLangs.add(language); gotPartial.countDown(); }
+            }
+            @Override public void onFinal(String text) { finalText.set(text); }
+            @Override public void onFinal(String text, String language) { finalText.set(text); finalLang.set(language); }
+            @Override public void onClosed() { closed.countDown(); }
+        };
+
+        WindowedStreamingSession session = new WindowedStreamingSession(stt, "auto", l, tmp);
+        session.acceptSamples(audio(0.6f));
+
+        assertTrue(gotPartial.await(3, TimeUnit.SECONDS), "expected language-aware partial");
+        assertTrue(partialLangs.stream().anyMatch("ar"::equals), "partial must carry detected Arabic language");
+        session.stop();
+        assertTrue(closed.await(5, TimeUnit.SECONDS));
+        assertEquals("مرحبا", finalText.get());
+        assertEquals("ar", finalLang.get(), "final must carry detected Arabic language");
+    }
+
+    @Test
+    void normalizesAutoDetectedLanguageToNullForCallbacks() throws Exception {
+        // Engines may report auto/detected markers; session should normalize to null (unknown/auto) for consumers.
+        FakeStt stt = new FakeStt();
+        stt.text = "hello";
+        stt.resultLang = "auto-detect";
+        AtomicReference<String> finalLang = new AtomicReference<>("unset");
+        CountDownLatch closed = new CountDownLatch(1);
+        StreamingTranscriptionListener l = new StreamingTranscriptionListener() {
+            @Override public void onFinal(String text, String language) { finalLang.set(language); }
+            @Override public void onClosed() { closed.countDown(); }
+        };
+
+        WindowedStreamingSession session = new WindowedStreamingSession(stt, "auto", l, tmp);
+        session.acceptSamples(audio(0.6f));
+        session.stop();
+        assertTrue(closed.await(5, TimeUnit.SECONDS));
+        assertEquals("hello", session.finalTranscript());
+        assertNull(finalLang.get(), "auto-detect marker must be normalized to null");
     }
 }

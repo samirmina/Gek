@@ -251,3 +251,35 @@ Source: `resources/models/argos/packages/` (20 packages, all with `model/model.b
 - **Gate 8 (P0 injection):** real-Windows interactive proof that hotkey/chat typing injects correctly in GEK and in external apps with no focus steal, correct "target not secured" handling, and "never inject into wrong window" guarantees (policy implemented; proof pending).
 - **P1/P2/env-blocked:** loopback/WASAPI E2E (ffmpeg/endpoint), Windows translation runtime/Option C (CT2+SPM Windows natives+binding, PoC+goldens), SAPI audibility/ducking, helper-process visibility â€” unchanged constraints on this host.
 
+
+## Session (2026-11-20, Windows host, continuation) — translation-oriented chat voice typing (in-field, no GEK overlay)
+
+**Goal (approved, in progress):** chat voice typing must be translation-oriented and populate/edit in the **currently focused external app's text field/caret** (no GEK overlay, no in-app composer). Stream **translated** partials live into that field (replace-on-update as speech evolves) so the user can edit/review there; **hotkey toggles start/stop only** and stop/finalize **leaves the final translated text in place for review/send (no auto-send)**. Pause/stop auto-updates if a manual edit is detected to avoid clobbering. Keep caret/focus targeting rules and strict chat/live separation.
+
+### Implemented (this session)
+- **[`com.gek.app.ChatVoiceTypingController`](src/main/java/com/gek/app/ChatVoiceTypingController.java):** translation-oriented in-field streaming refactor.
+  - Streaming partials: sequenced/coalesced handling (`partialSeq`) sanitizes and translates for chat via detected/preferred source → `settings.target_language` (fallback to transcript on unusable/blank/repetitive result or exception; same-lang returns transcript), then **replaces the injected segment in the secured target field**.
+  - Replace-on-update: tracks `lastInjectedText`; guarded by `fieldLock`; issues `BACKSPACE(lastInjectedText.length()) + TYPE_TEXT(newText)` (skips no-op/equal). On failed/unsafe replacement sets `autoUpdatePaused=true` and reports target not secured/auto-update paused (best-effort safety against clobbering). State reset on `start()`.
+  - Finalize (hotkey stop): invalidates in-flight partials; empty clears streamed segment and reports `stopped (no speech)`. Applies synonyms/voice commands (clears streamed text, executes actions, persists `dictation-cmd`, leaves field text for review). Otherwise translation-oriented finalize to target (same-lang keeps transcript; unavailable/invalid/repetitive/exception falls back to transcript with status note) and **leaves final text in the field for review/edit/send — no auto-send, no trailing space** (`ready:` or fallback note). Persists `dictation` of inserted text (translated when applied, else transcript + fallback lang). Uses accumulating window (`WindowedStreamingSession.ACCUMULATING_MAX_WINDOW_SECONDS`).
+- **[`com.gek.ui.ControlWindow`](src/main/java/com/gek/ui/ControlWindow.java):** removed chat voice-typing overlay wiring (`ChatTypingWindow` no longer created/routed/shown). Chat typing is in-field (no GEK overlay); hotkey remains toggle start/stop with secured-target capture; compact status reflects `ready (in field)` / listening / not-injected semantics. **Live captions remain HUD/overlay-only and decoupled.**
+- **Overlay retired:** [`com.gek.ui.ChatTypingWindow`](src/main/java/com/gek/ui/ChatTypingWindow.java) and [`com.gek.ui.ChatTypingWindowTest`](src/test/java/com/gek/ui/ChatTypingWindowTest.java) renamed to `.java.disabled` (unwired from build/runtime) to reflect "voice typing overlay gone" without destructive deletion.
+- **Tests:** [`com.gek.app.ChatVoiceTypingControllerTest`](src/test/java/com/gek/app/ChatVoiceTypingControllerTest.java) rewritten/extended for translation-oriented in-field UX (deterministic fakes): finalize leaves text in field (no auto-send), translated/fallback/unavailable/exception and Arabic/detected-language cases, command/not-injected/history isolation (`dictation`/`dictation-cmd` only, never `live`), and streaming in-field replace coverage (`partialForTest`: translated replacement via backspace+type, fallback-on-translation-failure).
+
+### Verification (Windows 11, JDK 21, Maven 3.9.9, from `D:\gek`, warm server disabled)
+- Targeted: `ChatVoiceTypingControllerTest` — **PASS (BUILD SUCCESS)**.
+- Compile: `mvn -q -DskipTests test-compile` — **BUILD SUCCESS**.
+- Full deterministic suite: `mvn -DargLine="-Dgek.stt.disableWarmServer=true" test` — **Tests run: 309, Failures: 0, Errors: 0, Skipped: 1, BUILD SUCCESS** (exit 0). JaCoCo report generated (known "execution data does not match" warnings for classes modified in-session). `ChatTypingWindowTest` no longer part of suite (retired).
+- Jar rebuilt: `mvn -q -DskipTests package` — **BUILD SUCCESS** (`target/gek-java-0.1.0-SNAPSHOT.jar`).
+
+### Notes / limitations (todo 12)
+- **Manual-edit detection while listening (external field):** with Robot/keystroke injection the controller cannot read arbitrary external field contents, so reliable detection of mid-stream user edits is **not fully provable**. Mitigations implemented: tracked last-injected segment, replace-on-update only of that segment, and **auto-update paused on failed/unsafe replacement or lost secured target** to reduce clobbering. A fully robust solution likely requires platform accessibility/UIA integration or a different interaction model — requires host validation.
+- **Invariants preserved:** chat typing is caret/in-field only with `dictation`/`dictation-cmd` history (no HUD/live coupling); live captions remain overlay-only/no injection/no chat coupling. Injection policy remains secured-target for any focused app (GEK or external).
+
+### AGENTS.md (checked per request)
+- Found [`gek-java/AGENTS.md`](AGENTS.md) (per-project rules template) and vendored `native/whisper.cpp/AGENTS.md`. No `AGENTS.md.` / trailing-dot "little file" found in `gek-java/`; rename/mark instruction could not be applied to a concrete target. GEK remains a desktop Swing/local-inference app — approved GEK plan/invariants take precedence over conflicting template architecture.
+
+### Still pending (gates / host-dependent, for testing today and follow-up)
+- **Gate 8 (P0, needs real Windows interactive proof):** in-field streaming replace/finalize in GEK and external apps — secured target, no focus steal, correct "target not secured", never wrong window.
+- **Gate 7:** warm `WhisperServerSttEngine` real-workload latency/readiness/tuning.
+- **Gate 5 / P1–P2:** real mic/captions E2E, loopback/WASAPI (ffmpeg/endpoint), SAPI audibility/ducking; Arabic spoken recognition quality is STT model/runtime dependent (quantized larger model + `source_language=ar` recommended) and translation runtime availability is host-dependent.
+- **Gates 9–10:** deterministic coverage uplift (mind JaCoCo aggregation anomalies), finalize handoff/commit as desired.

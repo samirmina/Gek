@@ -1,0 +1,47 @@
+package com.gek.ui;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+/**
+ * Deterministic tests for chat voice-typing partial UI helpers (Arabic/RTL rendering and tail retention).
+ * These cover logic added for plain-Arabic chat readability without requiring a live display/injection host.
+ */
+class ChatTypingWindowTest {
+
+    @Test
+    void isRtlTextDetectsArabicAndRtlScripts() {
+        assertTrue(ChatTypingWindow.isRtlText("مرحبا كيف حالك"), "plain Arabic should be RTL");
+        assertTrue(ChatTypingWindow.isRtlText("שלום"), "Hebrew should be RTL");
+        assertTrue(ChatTypingWindow.isRtlText("مرحبا hello"), "Arabic-dominant mixed text should be RTL");
+    }
+
+    @Test
+    void isRtlTextTreatsLtrAndNeutralAsNonRtl() {
+        assertFalse(ChatTypingWindow.isRtlText("hello world"), "English should be LTR");
+        assertFalse(ChatTypingWindow.isRtlText("12345 !!!"), "neutral/punctuation-only should not be RTL");
+        assertFalse(ChatTypingWindow.isRtlText("hello world مرحبا"), "English-dominant mixed text should not be RTL");
+        assertFalse(ChatTypingWindow.isRtlText(""));
+        assertFalse(ChatTypingWindow.isRtlText("   "));
+        assertFalse(ChatTypingWindow.isRtlText(null));
+    }
+
+    @Test
+    void tailKeepsMostRecentTextWithinBudget() {
+        assertEquals("", ChatTypingWindow.tail(null, 10));
+        assertEquals("abc", ChatTypingWindow.tail("abc", 10));
+        assertEquals("abc", ChatTypingWindow.tail("abc", 3));
+        String longText = "0123456789ABCDEFGHIJ";
+        String tailed = ChatTypingWindow.tail(longText, 8);
+        assertEquals("…DEFGHIJ", tailed, "tail should keep the most recent characters and prefix ellipsis");
+        assertTrue(tailed.length() <= 9, "tailed output bounded by budget (+ellipsis)");
+    }
+
+    @Test
+    void tailHandlesSmallOrZeroBudgetsSafely() {
+        assertEquals("…", ChatTypingWindow.tail("abcdef", 1));
+        assertEquals("…", ChatTypingWindow.tail("abcdef", 0));
+        assertEquals("…f", ChatTypingWindow.tail("abcdef", 2));
+    }
+}

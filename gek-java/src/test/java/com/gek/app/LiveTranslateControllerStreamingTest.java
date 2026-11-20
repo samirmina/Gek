@@ -236,4 +236,90 @@ class LiveTranslateControllerStreamingTest {
             // overlay-only: controller has no injector/caret APIs; behavior limited to HUD/history/tts callbacks
         }
     }
+
+    @Test
+    void streamingFinalUsesDetectedLanguageForLiveTranslatedText() throws Exception {
+        // Live captions translated-text flow must prefer detected source language (e.g. Arabic) over auto hint,
+        // produce translated HUD output, and persist as live overlay history (no injection).
+        AppSettings s = AppSettings.defaults();
+        s.source_language = "auto";
+        s.target_language = "en";
+        s.tts_enabled = false;
+        FakeStreamingStt stt = new FakeStreamingStt();
+        final java.util.concurrent.atomic.AtomicReference<String[]> call = new java.util.concurrent.atomic.AtomicReference<>();
+        TranslationEngine tr = new TranslationEngine() {
+            @Override public CompletableFuture<String> translate(String text, String sourceLang, String targetLang) {
+                call.set(new String[]{text, sourceLang, targetLang});
+                return CompletableFuture.completedFuture("hello");
+            }
+            @Override public void close() {}
+        };
+        List<String[]> heard = new CopyOnWriteArrayList<>();
+        CountDownLatch got = new CountDownLatch(1);
+
+        try (HistoryRepository h = new HistoryRepository(AppPaths.resolve().dbPath());
+             LiveTranslateController c = new LiveTranslateController(AppPaths.resolve(), s, stt, tr, h)) {
+            c.setTranscriptListener((o, t, m, src) -> { heard.add(new String[]{o, t, m, src}); got.countDown(); });
+            c.startWith(new NoopSource());
+
+            StreamingTranscriptionListener l = stt.listener.get();
+            assertNotNull(l);
+            l.onFinal("مرحبا", "ar"); // detected Arabic from streaming STT
+
+            assertTrue(got.await(3, TimeUnit.SECONDS), "final translated caption should reach HUD listener");
+            String[] args = call.get();
+            assertNotNull(args, "translation should be invoked for ar→en");
+            assertArrayEquals(new String[]{"مرحبا", "ar", "en"}, args);
+            assertEquals(1, heard.size());
+            assertEquals("مرحبا", heard.get(0)[0], "original caption text");
+            assertEquals("hello", heard.get(0)[1], "translated live caption text shown in HUD");
+            assertEquals("ar→en", heard.get(0)[2], "meta reflects detected source language");
+            assertEquals("fake-mic", heard.get(0)[3]);
+            assertEquals(1, h.count(), "live translated final persisted");
+            assertEquals("live", h.recent(1).get(0).sourceName(), "overlay/live history, isolated from chat typing");
+            assertEquals("مرحبا", h.recent(1).get(0).originalText());
+            assertEquals("ar", h.recent(1).get(0).originalLang());
+            assertEquals("hello", h.recent(1).get(0).translatedText());
+            assertEquals("en", h.recent(1).get(0).translatedLang());
+        }
+    }
+
+    @Test
+    void streamingFinalFallsBackToConfiguredHintWhenDetectedLanguageMissing() throws Exception {
+        // Backward-compatible 1-arg/unknown-detected finals should still use the configured hint.
+        AppSettings s = AppSettings.defaults();
+        s.source_language = "es";
+        s.target_language = "en";
+        s.tts_enabled = false;
+        FakeStreamingStt stt = new FakeStreamingStt();
+        final java.util.concurrent.atomic.AtomicReference<String[]> call = new java.util.concurrent.atomic.AtomicReference<>();
+        TranslationEngine tr = new TranslationEngine() {
+            @Override public CompletableFuture<String> translate(String text, String sourceLang, String targetLang) {
+                call.set(new String[]{text, sourceLang, targetLang});
+                return CompletableFuture.completedFuture("hello");
+            }
+            @Override public void close() {}
+        };
+        List<String[]> heard = new CopyOnWriteArrayList<>();
+        CountDownLatch got = new CountDownLatch(1);
+
+        try (HistoryRepository h = new HistoryRepository(AppPaths.resolve().dbPath());
+             LiveTranslateController c = new LiveTranslateController(AppPaths.resolve(), s, stt, tr, h)) {
+            c.setTranscriptListener((o, t, m, src) -> { heard.add(new String[]{o, t, m, src}); got.countDown(); });
+            c.startWith(new NoopSource());
+
+            StreamingTranscriptionListener l = stt.listener.get();
+            assertNotNull(l);
+            l.onFinal("hola"); // 1-arg callback -> hint fallback
+
+            assertTrue(got.await(3, TimeUnit.SECONDS));
+            assertArrayEquals(new String[]{"hola", "es", "en"}, call.get());
+            assertEquals(1, heard.size());
+            assertEquals("hola", heard.get(0)[0]);
+            assertEquals("hello", heard.get(0)[1]);
+            assertEquals("es→en", heard.get(0)[2]);
+            assertEquals(1, h.count());
+            assertEquals("es", h.recent(1).get(0).originalLang());
+        }
+    }
 }

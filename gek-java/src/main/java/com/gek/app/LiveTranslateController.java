@@ -104,7 +104,13 @@ public class LiveTranslateController implements AutoCloseable {
             String langHint = norm(settings.source_language);
             streamingSession = ((StreamingSpeechToTextEngine) stt).startSession(langHint, new StreamingTranscriptionListener() {
                 @Override public void onPartial(String text) { onStreamingPartial(text); }
-                @Override public void onFinal(String text) { onStreamingFinal(text, langHint); }
+                @Override public void onFinal(String text) {
+                    onStreamingFinal(text, langHint);
+                }
+                @Override public void onFinal(String text, String detectedLang) {
+                    String effective = (detectedLang != null && !detectedLang.isBlank()) ? detectedLang : langHint;
+                    onStreamingFinal(text, effective);
+                }
                 @Override public void onError(Throwable t) { log.warn("live streaming STT error: {}", t.getMessage()); status("error: " + t.getMessage()); }
                 @Override public void onClosed() { /* no-op */ }
             });

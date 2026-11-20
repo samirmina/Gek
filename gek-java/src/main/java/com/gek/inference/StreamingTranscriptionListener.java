@@ -8,8 +8,20 @@ public interface StreamingTranscriptionListener {
     /** Called with the latest partial (non-final) hypothesis for the current utterance/window. */
     default void onPartial(String text) {}
 
+    /**
+     * Called with the latest partial (non-final) hypothesis and the best-known detected language for it
+     * (may be {@code null} when unavailable/auto). Defaults to {@link #onPartial(String)} for compatibility.
+     */
+    default void onPartial(String text, String language) { onPartial(text); }
+
     /** Called when a stable/final transcript segment is produced. */
     default void onFinal(String text) {}
+
+    /**
+     * Called when a stable/final transcript segment is produced, with detected language if known
+     * (may be {@code null}). Defaults to {@link #onFinal(String)} for compatibility.
+     */
+    default void onFinal(String text, String language) { onFinal(text); }
 
     /** Called on session-level error (session may terminate). */
     default void onError(Throwable error) {}

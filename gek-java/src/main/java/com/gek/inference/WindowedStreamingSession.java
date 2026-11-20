@@ -52,6 +52,7 @@ public final class WindowedStreamingSession implements StreamingSttSession {
     private final AtomicBoolean decoding = new AtomicBoolean(false);
     private final AtomicBoolean pendingPartial = new AtomicBoolean(false);
     private final AtomicReference<String> lastText = new AtomicReference<>("");
+    private final AtomicReference<String> lastLanguage = new AtomicReference<>(null);
     private final AtomicInteger decodeSeq = new AtomicInteger(0);
 
     private final ScheduledExecutorService scheduler;
@@ -128,7 +129,7 @@ public final class WindowedStreamingSession implements StreamingSttSession {
         }
         if (snapshot == null || snapshot.length == 0) {
             decoding.set(false);
-            if (isFinal) finishFinal("");
+            if (isFinal) finishFinal("", lastLanguage.get());
             else drainPending();
             return;
         }
@@ -139,23 +140,27 @@ public final class WindowedStreamingSession implements StreamingSttSession {
     private void runDecode(float[] snapshot, int seq, boolean isFinal) {
         CompletableFuture
                 .supplyAsync(() -> transcribeSamples(snapshot))
-                .whenComplete((text, err) -> {
+                .whenComplete((res, err) -> {
                     try {
                         if (closed.get() && !isFinal) return;
                         if (err != null) {
                             listener.onError(err);
                         } else if (seq == decodeSeq.get()) {
-                            String t = TranscriptSanitizer.sanitize(text);
+                            String raw = res == null ? "" : (res.text() == null ? "" : res.text());
+                            String detected = res == null ? null : normalizeDetected(res.language());
+                            if (detected != null) lastLanguage.set(detected);
+                            String lang = lastLanguage.get();
+                            String t = TranscriptSanitizer.sanitize(raw);
                             if (isFinal) {
                                 lastText.set(t);
-                                finishFinal(t);
+                                finishFinal(t, lang);
                                 return;
                             } else if (!t.isEmpty() && !t.equals(lastText.get())) {
                                 lastText.set(t);
-                                listener.onPartial(t);
-                            } else if (t.isEmpty() && !TranscriptSanitizer.isBlankOrArtifact(text)) {
+                                listener.onPartial(t, lang);
+                            } else if (t.isEmpty() && !TranscriptSanitizer.isBlankOrArtifact(raw)) {
                                 // sanitized to empty but original wasn't pure artifact -> keep last stable
-                            } else if (t.isEmpty() && !lastText.get().isEmpty() && TranscriptSanitizer.isBlankOrArtifact(text)) {
+                            } else if (t.isEmpty() && !lastText.get().isEmpty() && TranscriptSanitizer.isBlankOrArtifact(raw)) {
                                 // artifact-only partial; don't regress visible text
                             }
                         }
@@ -176,7 +181,7 @@ public final class WindowedStreamingSession implements StreamingSttSession {
         }
     }
 
-    private String transcribeSamples(float[] samples) {
+    private TranscriptionResult transcribeSamples(float[] samples) {
         Path tmp = null;
         try {
             if (tmpDir != null) Files.createDirectories(tmpDir);
@@ -185,7 +190,7 @@ public final class WindowedStreamingSession implements StreamingSttSession {
                     : Files.createTempFile("chat-part-", ".wav");
             WavWriter.writeFloatMono16k(tmp, samples);
             TranscriptionResult tr = engine.transcribe(tmp, languageHint).join();
-            return tr == null ? "" : (tr.text() == null ? "" : tr.text());
+            return tr == null ? new TranscriptionResult("", null, 0.0, 0.0) : tr;
         } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {
@@ -212,12 +217,24 @@ public final class WindowedStreamingSession implements StreamingSttSession {
     }
 
     private void finishFinal(String text) {
+        finishFinal(text, lastLanguage.get());
+    }
+
+    private void finishFinal(String text, String language) {
         if (closed.compareAndSet(false, true)) {
             running.set(false);
             scheduler.shutdownNow();
-            listener.onFinal(text == null ? "" : text);
+            String lang = normalizeDetected(language);
+            listener.onFinal(text == null ? "" : text, lang);
             listener.onClosed();
         }
+    }
+
+    private static String normalizeDetected(String s) {
+        if (s == null) return null;
+        String v = s.trim().toLowerCase(java.util.Locale.ROOT);
+        if (v.isEmpty() || "auto".equals(v) || "detected".equals(v) || "auto-detect".equals(v)) return null;
+        return v;
     }
 
     @Override

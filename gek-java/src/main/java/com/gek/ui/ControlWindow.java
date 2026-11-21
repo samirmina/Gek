@@ -25,7 +25,7 @@ import java.awt.event.WindowEvent;
 
 /**
  * Compact main menu + minimal floating control for:
- *  - Voice Typing (streaming chat voice typing: live partials UI, finalize-to-caret; caret/typing logic separate from live captions)
+ *  - Voice Typing (translation-oriented, streams translated text into the focused external field/caret; no GEK overlay)
  *  - Live (mic transcription/translation -> HUD overlay only)
  *  - Playback Transcribe (system/playback audio capture -> HUD overlay only)
  * Devices are auto-selected by default (no manual dropdowns).
@@ -52,7 +52,6 @@ public class ControlWindow extends JFrame {
     private final JToggleButton playbackBtn = new JToggleButton("Playback");
 
     private HudWindow hudWindow;
-    private ChatTypingWindow chatWindow;
     private FloatingControlWindow floatingWindow;
     private TrayIcon trayIcon;
 
@@ -77,13 +76,13 @@ public class ControlWindow extends JFrame {
 
         status.setAlignmentX(Component.LEFT_ALIGNMENT);
         status.setFont(status.getFont().deriveFont(Font.BOLD, 12f));
-        status.setToolTipText("Voice typing: streaming chat partials + finalize-to-caret (overlay does not steal focus).");
+        status.setToolTipText("Voice typing: streams translated text into the focused field (no overlay). Hotkey toggles start/stop; stop leaves text for review/send.");
         root.add(status);
         root.add(Box.createVerticalStrut(6));
 
         JPanel modes = new JPanel(new GridLayout(1, 3, 6, 0));
         modes.setAlignmentX(Component.LEFT_ALIGNMENT);
-        configureModeButton(voiceBtn, "Streaming voice typing (live partials, finalize-to-caret via hotkey)");
+        configureModeButton(voiceBtn, "Translation-oriented voice typing into focused field (hotkey toggles start/stop)");
         configureModeButton(liveBtn, "Live mic transcription/translation (HUD overlay)");
         configureModeButton(playbackBtn, "Transcribe playback/system audio (HUD overlay)");
         modes.add(voiceBtn); modes.add(liveBtn); modes.add(playbackBtn);
@@ -102,14 +101,9 @@ public class ControlWindow extends JFrame {
         liveBtn.addActionListener(e -> onModePressed(Mode.LIVE_MIC, liveBtn.isSelected()));
         playbackBtn.addActionListener(e -> onModePressed(Mode.PLAYBACK_TRANSCRIBE, playbackBtn.isSelected()));
 
-        // Chat voice typing (streaming, caret logic) — partials go to dedicated chat window, not HUD.
+        // Chat voice typing (translation-oriented, in-field streaming) — no GEK overlay, writes into focused field/caret.
         if (chatTyping != null) {
-            chatTyping.setPartialListener(p -> SwingUtilities.invokeLater(() -> {
-                ensureChatWindow();
-                if (chatWindow != null) {
-                    if (p == null || p.isBlank()) chatWindow.clearPartial(); else chatWindow.showPartial(p);
-                }
-            }));
+            chatTyping.setPartialListener(null);
             chatTyping.setStatusListener(s -> onStatus(FloatingControlWindow.Mode.VOICE_TYPING, "[voice] " + s));
         } else if (dictation != null) {
             dictation.setStatusListener(s -> onStatus(FloatingControlWindow.Mode.VOICE_TYPING, "[voice] " + s));
@@ -185,7 +179,6 @@ public class ControlWindow extends JFrame {
         if (!selected) {
             stopAllModes();
             WindowsFocusManager.clear();
-            if (chatWindow != null) chatWindow.clearPartial();
             syncUi(null, "Ready");
             return;
         }
@@ -196,7 +189,6 @@ public class ControlWindow extends JFrame {
         if (mode != Mode.LIVE_MIC) liveBtn.setSelected(false);
         if (mode != Mode.PLAYBACK_TRANSCRIBE) playbackBtn.setSelected(false);
         stopAllModes();
-        if (mode != Mode.VOICE_TYPING && chatWindow != null) chatWindow.clearPartial();
         switch (mode) {
             case VOICE_TYPING -> startVoiceTyping();
             case LIVE_MIC -> startLiveMic();
@@ -211,9 +203,7 @@ public class ControlWindow extends JFrame {
             voiceBtn.setSelected(false);
             return;
         }
-        ensureChatWindow();
-        if (chatWindow != null) { chatWindow.clearPartial(); chatWindow.showStatus("Voice typing (streaming…)"); chatWindow.setVisible(true); }
-        syncUi(FloatingControlWindow.Mode.VOICE_TYPING, "Starting chat voice typing...");
+        syncUi(FloatingControlWindow.Mode.VOICE_TYPING, "Starting voice typing...");
         new Thread(() -> {
             try {
                 if (chatTyping != null) {
@@ -221,7 +211,7 @@ public class ControlWindow extends JFrame {
                 } else {
                     dictation.start();
                 }
-                SwingUtilities.invokeLater(() -> syncUi(FloatingControlWindow.Mode.VOICE_TYPING, "Voice typing (streaming, auto mic)"));
+                SwingUtilities.invokeLater(() -> syncUi(FloatingControlWindow.Mode.VOICE_TYPING, "Voice typing (in-field, auto mic)"));
             } catch (Exception ex) {
                 log.warn("voice typing start failed: {}", ex.getMessage(), ex);
                 SwingUtilities.invokeLater(() -> { syncUi(null, "Voice typing failed: " + rootMsg(ex)); voiceBtn.setSelected(false); });
@@ -290,20 +280,6 @@ public class ControlWindow extends JFrame {
                 if (mode != null) floatingWindow.setActiveMode(mode);
                 floatingWindow.setStatusText(shortPreview(ui.replace("[voice] ", "").replace("[audio] ", ""), 28));
             }
-            // Keep chat partials window in sync for voice typing lifecycle (no transcript text in compact UI).
-            if (mode == FloatingControlWindow.Mode.VOICE_TYPING && chatWindow != null) {
-                String body = msg == null ? "" : msg.replaceFirst("^\\[(voice|audio)\\]\\s*", "");
-                String lower = body.toLowerCase();
-                if (lower.startsWith("injected:") || lower.startsWith("command:") || lower.startsWith("command-failed")
-                        || lower.startsWith("stopped") || lower.startsWith("discarded") || lower.startsWith("not-injected")
-                        || lower.startsWith("translation") || lower.startsWith("error")) {
-                    chatWindow.showStatus(body.isEmpty() ? "Done" : shortPreview(body, 42));
-                    // clear partial text on finalization; keep window for status feedback
-                    if (lower.startsWith("injected:") || lower.startsWith("command:") || lower.startsWith("stopped")) {
-                        chatWindow.clearPartial();
-                    }
-                }
-            }
         });
     }
 
@@ -315,7 +291,8 @@ public class ControlWindow extends JFrame {
         String body = s.replaceFirst("^\\[(voice|audio)\\]\\s*", "");
         String lower = body.toLowerCase();
         if (voice) {
-            if (lower.startsWith("injected:")) return "[voice] Injected";
+            if (lower.startsWith("ready:")) return "[voice] Ready (in field)";
+            if (lower.startsWith("injected:")) return "[voice] Ready (in field)";
             if (lower.startsWith("not-injected")) return "[voice] Not injected (target not secured)";
             if (lower.startsWith("command:")) return "[voice] " + body;
             if (lower.startsWith("command-failed")) return "[voice] " + body;
@@ -343,18 +320,13 @@ public class ControlWindow extends JFrame {
         if (floatingWindow != null) return;
         floatingWindow = new FloatingControlWindow(this);
         floatingWindow.setModeAction(mode -> {
-            if (mode == null) { stopAllModes(); if (chatWindow != null) chatWindow.clearPartial(); syncUi(null, "Ready"); return; }
+            if (mode == null) { stopAllModes(); syncUi(null, "Ready"); return; }
             switch (mode) {
                 case VOICE_TYPING -> { voiceBtn.setSelected(true); onModePressed(Mode.VOICE_TYPING, true); }
                 case LIVE_MIC -> { liveBtn.setSelected(true); onModePressed(Mode.LIVE_MIC, true); }
                 case PLAYBACK_TRANSCRIBE -> { playbackBtn.setSelected(true); onModePressed(Mode.PLAYBACK_TRANSCRIBE, true); }
             }
         });
-    }
-
-    private void ensureChatWindow() {
-        if (chatWindow != null) return;
-        chatWindow = new ChatTypingWindow(this);
     }
 
     private void toggleHud() {
